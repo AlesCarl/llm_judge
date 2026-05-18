@@ -21,6 +21,7 @@ def run_single_benchmark(
     max_steps: int,
     judge_llm_backend: str,
     judge_model: str,
+    judge_type: str, #
     destroy_env: bool,
 ):
     """
@@ -56,7 +57,7 @@ def run_single_benchmark(
     )
 
     # Step 4: Evaluate results
-    eval_results(judge_llm_backend=judge_llm_backend, judge_model=judge_model, destroy_env=destroy_env)
+    eval_results(judge_llm_backend=judge_llm_backend, judge_model=judge_model,judge_type=judge_type, destroy_env=destroy_env)
 
     # Step 5: Cleanup environment if required
     if destroy_env:
@@ -129,6 +130,7 @@ def main():
     # ===== Evaluation configuration =====
     parser.add_argument("--judge_llm_backend", type=str, default="openai")
     parser.add_argument("--judge_model", type=str, default="gpt-5-mini")
+    parser.add_argument("--judge_type", type=str, default="single", choices=["single", "multi"]) ##
     parser.add_argument(
         "--destroy_env",
         action="store_true",
@@ -150,6 +152,7 @@ def main():
             max_steps=args.max_steps,
             judge_llm_backend=args.judge_llm_backend,
             judge_model=args.judge_model,
+            judge_type=args.judge_type,
             destroy_env=args.destroy_env,
         )
     else:

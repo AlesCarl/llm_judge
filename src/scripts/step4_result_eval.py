@@ -15,6 +15,9 @@ from nika.orchestrator.tasks.rca import RCATask
 from nika.utils.logger import system_logger
 from nika.utils.session import Session
 
+from nika.evaluator.multi_agent_judge import MultiAgentJudge
+
+
 logger = system_logger
 
 
@@ -67,7 +70,13 @@ def generic_eval(gt, submission):
     )
 
 
-def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str):
+import time 
+from langchain_core.exceptions import OutputParserException ##
+
+
+
+
+def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str, judge_type="single"):
     """Evaluate the problem solution and log the results."""
     gt = f"{session.session_dir}/ground_truth.json"
     gt = json.loads(open(gt, "r").read())
@@ -98,8 +107,20 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str):
 
     logger.info(f"Evaluating session {session.session_id} using LLM-as-Judge.")
 
+    start_time = time.time()
+
+
     # llm as judge evaluation
-    llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    #llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    
+
+    if judge_type == "multi":
+        llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    else:
+        llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+
+
+    '''' 
     judge_response: JudgeResponse = llm_judge.evaluate_agent(
         ground_truth=textwrap.dedent(f"""\
                 The root cause is {gt["root_cause_name"]}.
@@ -108,12 +129,65 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str):
         trace_path=trace_path,
         save_path=f"{session.session_dir}/llm_judge.json",
     )
+
     relevance_score = judge_response.scores.relevance.score
     correctness_score = judge_response.scores.correctness.score
     efficiency_score = judge_response.scores.efficiency.score
     clarity_score = judge_response.scores.clarity.score
     final_outcome_score = judge_response.scores.final_outcome.score
     overall_score = judge_response.scores.overall_score.score
+    '''
+
+    try:
+        judge_response = llm_judge.evaluate_agent(
+            ground_truth=textwrap.dedent(f"""\
+                The root cause is {gt["root_cause_name"]}.
+                The faulty devices are: {", ".join(gt["faulty_devices"])}.
+            """),
+            trace_path=trace_path,
+            save_path=f"{session.session_dir}/llm_judge.json",
+            #save_path=None,  
+        )
+        
+        relevance_score = judge_response.scores.relevance.score
+        correctness_score = judge_response.scores.correctness.score
+        efficiency_score = judge_response.scores.efficiency.score
+        clarity_score = judge_response.scores.clarity.score
+        final_outcome_score = judge_response.scores.final_outcome.score
+        overall_score = judge_response.scores.overall_score.score
+        
+        judge_response.eval_time = round(time.time() - start_time, 2) ##
+        print(f"\n  LLM Judge eval time: {judge_response.eval_time}s\n")
+
+
+        # ora salva con eval_time corretto
+        with open(f"{session.session_dir}/llm_judge.json", "w+") as f:
+            f.write(judge_response.model_dump_json(indent=2))
+        
+
+
+
+    except OutputParserException as e:
+
+        print(f"FULL ERROR: {e}")  # debug temp 
+
+        eval_time = round(time.time() - start_time, 2)
+        print(f"\n  LLM Judge eval time (Format Error): {eval_time}s\n")
+
+        md_path = f"{session.session_dir}/llm_judge.md"
+        
+        with open(md_path, "w") as f:
+            f.write(e.llm_output)
+            
+        logger.warning(f"Output del giudice non parsabile come JSON. Testo grezzo salvato in {md_path}")
+        
+        relevance_score = -1
+        correctness_score = -1
+        efficiency_score = -1
+        clarity_score = -1
+        final_outcome_score = -1
+        overall_score = -1
+
 
     # parse agent trace
     trace_parser = AgentTraceParser(trace_path=trace_path)
@@ -147,7 +221,7 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str):
         steps=trace_metrics.get("steps", None),
         tool_calls=trace_metrics.get("tool_calls", None),
         tool_errors=trace_metrics.get("tool_errors", None),
-        time_taken=round(float(session.end_time) - float(session.start_time), 2),
+        time_taken=round(float(session.end_time) - float(session.start_time), 2),         ## è nuovo ??? 
         llm_judge_relevance_score=relevance_score,
         llm_judge_correctness_score=correctness_score,
         llm_judge_efficiency_score=efficiency_score,
@@ -168,24 +242,34 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str):
     record_eval_result(eval_result)
 
 
-def eval_results(judge_llm_backend, judge_model, destroy_env=True):
+
+def eval_results(judge_llm_backend, judge_model,judge_type="single", destroy_env=True):
     """
     Destroy the network environment associated with the current session.
     """
+    # start_time = time.time()  # start timer
+
     session = Session()
     session.load_running_session()
 
-    _eval_problem(session, judge_llm_backend, judge_model)
+    _eval_problem(session, judge_llm_backend, judge_model, judge_type)
     net_env = get_net_env_instance(session.scenario_name)
     if destroy_env and net_env.lab_exists():
         net_env.undeploy()
     logger.info(f"Destroyed network environment: {session.scenario_name} with session ID: {session.session_id}")
-    session.clear_session()
+    session.clear_session() #-- commento per i confronti 
     assert not os.path.exists(f"{BASE_DIR}/runtime/current_session.json")
+
+    # elapsed = time.time() - start_time  # stop timer
+    #logger.info(f"Step 4 completed in {elapsed:.2f}s")  # log --- dentro _eval_problem -----
+
+
 
 
 if __name__ == "__main__":
+    
     parser = argparse.ArgumentParser(description="Evaluate agent results.")
+    
     parser.add_argument(
         "--judge_llm_backend",
         type=str,
@@ -201,6 +285,22 @@ if __name__ == "__main__":
         default="gpt-5-mini",
         help="LLM model used for judgment (default: gpt-5-mini)",
     )
+
+
+    parser.add_argument( ## choose between MULTI or SINGLE judge
+        "--judge_type",
+        type=str,
+        nargs="?",
+        default="single",
+        choices=["single", "multi"],
+        help="Judge type: single (LLMJudge) or multi (MultiAgentJudge)",
+    )
+
+
     args = parser.parse_args()
 
-    eval_results(judge_llm_backend=args.judge_llm_backend, judge_model=args.judge_model)
+    eval_results(
+        judge_llm_backend=args.judge_llm_backend,
+        judge_model=args.judge_model,
+        judge_type=args.judge_type,
+    )

@@ -11,9 +11,14 @@ from agent.utils.template import LLM_JUDGE_PROMPT_TEMPLATE
 from nika.config import RESULTS_DIR
 from nika.orchestrator.problems.prob_pool import get_problem_instance
 
+from nika.evaluator.base_judge import BaseJudge
+from nika.evaluator.schemas import JudgeResponse, Score, Scores
+
+
 load_dotenv()
 
 
+''' 
 class Score(BaseModel):
     score: int = Field(..., ge=1, le=5, description="Score from 1 to 5.")
     comment: str = Field(..., description="Comment explaining the rationale for the score.")
@@ -28,56 +33,33 @@ class Scores(BaseModel):
     overall_score: Score = Field(..., description="Overall final score summarizing the total performance.")
 
 
+
 class JudgeResponse(BaseModel):
     scores: Scores = Field(..., description="Per-criterion scores and evaluator comments.")
     overall_evaluation: str = Field(..., description="High-level summary of strengths and weaknesses.")
     reasoning_for_overall_score: str = Field(..., description="Explanation of why this overall score was given.")
+    eval_time: float = 0.0   ##
+
+'''
 
 
-class LLMJudge:
+class LLMJudge(BaseJudge):
+
     def __init__(self, judge_llm_backend: str = "openai", judge_model: str = "gpt-5-mini"):
+
         self.llm = load_model(llm_backend=judge_llm_backend, model=judge_model)
-        self.llm = self.llm.with_structured_output(JudgeResponse)
+        
+
+        self.llm = self.llm.with_structured_output(JudgeResponse) #
         self.prompt = LLM_JUDGE_PROMPT_TEMPLATE
 
-    def _parse_trace(self, trace: str) -> str:
-        """Parse the agent's action history trace.
-        1. Remove generation info and usage metadata.
 
-        Args:
-            trace: The raw trace string.
 
-        Returns:
-            str: The parsed trace.
-        """
-        new_trace = []
-        for line in trace.splitlines():
-            line = json.loads(line)
-            if "event" in line:
-                if line["event"] == "llm_start":
-                    payload = line.get("prompts", "")
-                    new_trace.append(
-                        {
-                            "timestamp": line.get("timestamp", ""),
-                            "event": "LLM Prompt",
-                            "payload": payload,
-                        }
-                    )
-                elif line["event"] == "llm_end":
-                    payload = line.get("text", "")
-                    new_trace.append(
-                        {
-                            "timestamp": line.get("timestamp", ""),
-                            "event": "LLM Response",
-                            "payload": payload,
-                        }
-                    )
-                else:
-                    new_trace.append(line)
-        return json.dumps(new_trace, ensure_ascii=False)
 
     def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str) -> str:
         """Evaluate the agent's performance based on the problem description, network environment info, and action history.
+
+        ### Un singolo LLM legge trace+ground_truth e produce direttamente il JudgeResponse
 
         Args:
             problem_description: Description of the problem.
@@ -101,8 +83,10 @@ class LLMJudge:
             evaluation: JudgeResponse = self.llm.invoke(self.prompt)
 
         # Save evaluation result to file
-        with open(save_path, "w+") as f:
+        if save_path:
+          with open(save_path, "w+") as f:
             f.write(evaluation.model_dump_json(indent=2))
+
 
         return evaluation
 
