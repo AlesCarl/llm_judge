@@ -26,4 +26,12 @@ class JudgeResponse(BaseModel):
     scores: Scores = Field(..., description="Per-criterion scores and evaluator comments.")
     overall_evaluation: str = Field(..., description="High-level summary of strengths and weaknesses.")
     reasoning_for_overall_score: str = Field(..., description="Explanation of why this overall score was given.")
-    eval_time: float = 0.0   ##
+    eval_time: float = 0.0
+
+
+class DebaterResponse(BaseModel):
+    """Output produced by each debate participant (critic & advocate)"""
+    scores: Scores = Field(..., description="Per-criterion scores with justification.")
+    reasoning: str = Field(..., description="Overall reasoning summary supporting the scores.")
+    # JudgeResponse invece rimane l'output finale
+
