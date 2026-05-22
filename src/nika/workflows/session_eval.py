@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 
 from nika.evaluator.llm_judge import JudgeResponse, LLMJudge
+from nika.evaluator.multi_agent_judge import MultiAgentJudge
 from nika.evaluator.result_log import EvalResult, record_eval_result
 from nika.evaluator.trace_parser import AgentTraceParser
 from nika.net_env.net_env_pool import get_net_env_instance
@@ -115,8 +116,21 @@ def run_eval_metrics(*, session_id: str | None = None) -> None:
     logger.info(f"Wrote numeric eval metrics to {out_path}")
 
 
-def run_llm_judge(judge_llm_backend: str, judge_model: str, *, session_id: str | None = None) -> None:
-    """Run LLM-as-judge only; writes ``llm_judge.json`` under the session dir."""
+def run_llm_judge(
+    judge_llm_backend: str,
+    judge_model: str,
+    *,
+    judge_type: str = "single",
+    session_id: str | None = None,
+) -> None:
+    """Run LLM-as-judge only; writes ``llm_judge.json`` under the session dir.
+
+    Args:
+        judge_llm_backend: LLM provider (openai, ollama, deepseek).
+        judge_model: Model id for the chosen backend.
+        judge_type: ``single`` for LLMJudge, ``multi`` for MultiAgentJudge (Critic/Advocate debate).
+        session_id: Target session id (auto-detected when only one session is running).
+    """
     session = Session()
     session.load_running_session(session_id=session_id)
 
@@ -124,9 +138,13 @@ def run_llm_judge(judge_llm_backend: str, judge_model: str, *, session_id: str |
     gt = json.loads(gt_path.read_text())
 
     trace_path = os.path.join(session.session_dir, "conversation_diagnosis_agent.log")
-    logger.info(f"Evaluating session {session.session_id} using LLM-as-Judge.")
+    logger.info(f"Evaluating session {session.session_id} using LLM-as-Judge (judge_type={judge_type}).")
 
-    llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    if judge_type == "multi":
+        llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    else:
+        llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+
     llm_judge.evaluate_agent(
         ground_truth=textwrap.dedent(
             f"""\
@@ -263,10 +281,11 @@ def eval_results(
     judge_llm_backend: str,
     judge_model: str,
     *,
+    judge_type: str = "single",
     destroy_env: bool = True,
     session_id: str | None = None,
 ) -> None:
     """Run metrics, LLM judge, and publish in one call (benchmark / legacy pipeline)."""
     run_eval_metrics(session_id=session_id)
-    run_llm_judge(judge_llm_backend, judge_model, session_id=session_id)
+    run_llm_judge(judge_llm_backend, judge_model, judge_type=judge_type, session_id=session_id)
     publish_session_eval(destroy_env=destroy_env, session_id=session_id)

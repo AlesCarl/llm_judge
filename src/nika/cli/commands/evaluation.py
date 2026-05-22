@@ -27,13 +27,18 @@ def eval_judge(
         help="LLM provider for the judge (openai, ollama, deepseek).",
     ),
     judge_model: str = typer.Option(..., "-m", "--model", help="Judge model id."),
+    judge_type: str = typer.Option(
+        "single",
+        "--judge-type",
+        help="Judge strategy: 'single' (LLMJudge) or 'multi' (Critic/Advocate debate).",
+    ),
     session_id: str | None = typer.Option(None, "--session-id", help="Target session id (lab_hash)."),
 ) -> None:
     """Run LLM-as-judge only; write llm_judge.json."""
     from nika.workflows.session_eval import run_llm_judge
 
     try:
-        run_llm_judge(judge_backend, judge_model, session_id=session_id)
+        run_llm_judge(judge_backend, judge_model, judge_type=judge_type, session_id=session_id)
     except (FileNotFoundError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 

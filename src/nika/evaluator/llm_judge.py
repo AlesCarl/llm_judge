@@ -1,9 +1,9 @@
 import json
 import os
 
-from dotenv import load_dotenv
 from langsmith import tracing_context
-from pydantic import BaseModel, Field
+
+from dotenv import load_dotenv
 
 # from agent.llm.langchain_deepseek import DeepSeekLLM
 from agent.llm.model_factory import load_model
@@ -13,6 +13,8 @@ from nika.orchestrator.problems.prob_pool import get_problem_instance
 
 from nika.evaluator.base_judge import BaseJudge
 from nika.evaluator.schemas import JudgeResponse, Score, Scores
+
+
 
 
 load_dotenv()
@@ -56,7 +58,7 @@ class LLMJudge(BaseJudge):
 
 
 
-    def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str) -> str:
+def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str = None) -> str:
         """Evaluate the agent's performance based on the problem description, network environment info, and action history.
 
         ### Un singolo LLM legge trace+ground_truth e produce direttamente il JudgeResponse
@@ -83,9 +85,11 @@ class LLMJudge(BaseJudge):
             evaluation: JudgeResponse = self.llm.invoke(self.prompt)
 
         # Save evaluation result to file
+        
         if save_path:
-          with open(save_path, "w+") as f:
-            f.write(evaluation.model_dump_json(indent=2))
+            with open(save_path, "w+") as f:
+             f.write(evaluation.model_dump_json(indent=2))
+
 
 
         return evaluation
@@ -102,11 +106,9 @@ if __name__ == "__main__":
 
     trace_file = os.path.join(RESULTS_DIR, root_cause_name, f"{session_id}_{eval_model}_conversation.log")
 
-    evaluation_content, score = judge.evaluate_agent(
+    evaluation_content = judge.evaluate_agent(
         problem_description,
-        net_env_info,
         trace_file,
         save_path=os.path.join(RESULTS_DIR, root_cause_name, f"{session_id}_{eval_model}_llm_judge.log"),
     )
     print("Evaluation Result:", evaluation_content)
-    print("Evaluation Score:", score)
