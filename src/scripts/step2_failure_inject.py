@@ -28,7 +28,8 @@ def inject_failure(problem_names: list[str], re_inject: bool = True):
 
     tot_tasks = []
     for task_level in TaskLevel:
-        random.seed(session.session_id[-4:])
+        #random.seed(session.session_id[-4:])
+        random.seed(42)
         problem = get_problem_instance(
             problem_names=problem_names, task_level=task_level, scenario_name=session.scenario_name, **scenario_params
         )

@@ -115,7 +115,7 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str, ju
     
 
     if judge_type == "multi":
-        llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+        llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model, max_rounds=3 )
     else:
         llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
 
@@ -243,7 +243,7 @@ def _eval_problem(session: Session, judge_llm_backend: str, judge_model: str, ju
 
 
 
-def eval_results(judge_llm_backend, judge_model,judge_type="single", destroy_env=True):
+def eval_results(judge_llm_backend, judge_model,judge_type="single", destroy_env=True): ###
     """
     Destroy the network environment associated with the current session.
     """
