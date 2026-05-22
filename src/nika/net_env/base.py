@@ -1,8 +1,10 @@
 import time
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, Set
 
 from Kathara.manager.Kathara import Kathara, Machine
+
+from nika.net_env.utils.docker_files.docker_images import ensure_nika_docker_images
 
 
 class NetworkEnvBase:
@@ -133,11 +135,21 @@ class NetworkEnvBase:
             return False
         return True
 
+    def _collect_lab_images(self) -> Set[str]:
+        if not self.lab or not self.lab.machines:
+            return set()
+        return {machine.get_image() for machine in self.lab.machines.values()}
+
+    def _ensure_docker_images(self) -> None:
+        """Ensure local NIKA Docker images required by this lab are available."""
+        ensure_nika_docker_images(self._collect_lab_images())
+
     def deploy(self):
         """Deploy the lab"""
         if self.lab_exists():
             print(f"Lab {self.name} exists")
             return
+        self._ensure_docker_images()
         Kathara.get_instance().deploy_lab(lab=self.lab)
         # sleep for a while to let the lab stabilize
         time.sleep(5)

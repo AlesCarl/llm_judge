@@ -8,6 +8,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 
 # ==================================================================
 # Problem: BGP Access Policy Misconfiguration - ACL blocking BGP traffic
@@ -18,6 +19,12 @@ class BGPAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "bgp_acl_block"
     TAGS: str = ["bgp"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="bgp_acl_block",
+        summary="Block BGP traffic with ACL on one router.",
+        fields=(FailureParamField("host_name", "str", "Target router host name."),),
+        example="nika failure inject bgp_acl_block --set host_name=r1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -38,10 +45,6 @@ class BGPAclBlockBase:
             rule="tcp sport 179 drop",
             table_name="filter",
         )
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(host_name=self.faulty_devices[0], table_name="filter")
-
 
 class BGPAclBlockDetection(BGPAclBlockBase, DetectionTask):
     META = ProblemMeta(
@@ -79,6 +82,12 @@ class OSPFAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "ospf_acl_block"
     TAGS: str = ["ospf"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="ospf_acl_block",
+        summary="Block OSPF traffic with ACL on one router.",
+        fields=(FailureParamField("host_name", "str", "Target router host name."),),
+        example="nika failure inject ospf_acl_block --set host_name=r1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -99,10 +108,6 @@ class OSPFAclBlockBase:
             rule="ip protocol ospf drop",
             table_name="filter",
         )
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(host_name=self.faulty_devices[0], table_name="filter")
-
 
 class OSPFAclBlockDetection(OSPFAclBlockBase, DetectionTask):
     META = ProblemMeta(
@@ -140,6 +145,12 @@ class ARPAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "arp_acl_block"
     TAGS: str = ["arp"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="arp_acl_block",
+        summary="Block ARP traffic with ACL on one host.",
+        fields=(FailureParamField("host_name", "str", "Target host name."),),
+        example="nika failure inject arp_acl_block --set host_name=h1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -151,10 +162,6 @@ class ARPAclBlockBase:
     def inject_fault(self):
         self.injector.inject_acl_rule(host_name=self.faulty_devices[0], rule="drop", table_name="filter", family="arp")
         self.kathara_api.exec_cmd(self.faulty_devices[0], "ip neigh flush all")
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(host_name=self.faulty_devices[0], table_name="filter", family="arp")
-
 
 class ARPAclBlockDetection(ARPAclBlockBase, DetectionTask):
     META = ProblemMeta(
@@ -192,6 +199,12 @@ class IcmpAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "icmp_acl_block"
     TAGS: str = ["icmp"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="icmp_acl_block",
+        summary="Block ICMP traffic with ACL on one host.",
+        fields=(FailureParamField("host_name", "str", "Target host name."),),
+        example="nika failure inject icmp_acl_block --set host_name=h1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -204,10 +217,6 @@ class IcmpAclBlockBase:
         self.injector.inject_acl_rule(
             host_name=self.faulty_devices[0], family="ip", rule="ip protocol icmp drop", table_name="filter"
         )
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(host_name=self.faulty_devices[0], table_name="filter", family="ip")
-
 
 class IcmpAclBlockDetection(IcmpAclBlockBase, DetectionTask):
     META = ProblemMeta(
@@ -245,6 +254,12 @@ class HttpAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "http_acl_block"
     TAGS: str = ["http", "host"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="http_acl_block",
+        summary="Block HTTP traffic with ACL on one host.",
+        fields=(FailureParamField("host_name", "str", "Target host name."),),
+        example="nika failure inject http_acl_block --set host_name=h1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -257,10 +272,6 @@ class HttpAclBlockBase:
         self.injector.inject_acl_rule(
             host_name=self.faulty_devices[0], family="inet", rule="tcp dport 80 drop", table_name="filter"
         )
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(host_name=self.faulty_devices[0], table_name="filter", family="inet")
-
 
 class HttpAclBlockDetection(HttpAclBlockBase, DetectionTask):
     META = ProblemMeta(
@@ -299,6 +310,12 @@ class DNSPortBlockedBase:
     root_cause_name: str = "dns_port_blocked"
 
     TAGS: str = ["dns", "http"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="dns_port_blocked",
+        summary="Block DNS service ports with ACL on DNS server.",
+        fields=(FailureParamField("host_name", "str", "Target DNS server host name."),),
+        example="nika failure inject dns_port_blocked --set host_name=dns0",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -318,17 +335,6 @@ class DNSPortBlockedBase:
             rule="udp dport 53 drop",
             table_name="filter",
         )
-
-    def recover_fault(self):
-        self.injector.recover_acl_rule(
-            host_name=self.faulty_devices[0],
-            table_name="filter",
-        )
-        self.injector.recover_acl_rule(
-            host_name=self.faulty_devices[0],
-            table_name="filter",
-        )
-
 
 class DNSPortBlockedDetection(DNSPortBlockedBase, DetectionTask):
     META = ProblemMeta(
@@ -361,4 +367,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     problem = HttpAclBlockBase(scenario_name="rip_small_internet_vpn")
     problem.inject_fault()
-    # problem.recover_fault()

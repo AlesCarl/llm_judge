@@ -9,7 +9,8 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.outputs.generation import Generation
 
-from nika.config import BASE_DIR
+from nika.config import RESULTS_DIR
+from nika.utils.session import Session
 
 
 class FileLoggerHandler(BaseCallbackHandler):
@@ -22,15 +23,12 @@ class FileLoggerHandler(BaseCallbackHandler):
         for h in list(self.logger.handlers):
             self.logger.removeHandler(h)
 
-        # read session info from file
-        with open(f"{BASE_DIR}/runtime/current_session.json", "r") as f:
-            session_info = json.load(f)
+        session = Session().load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
 
         log_path = os.path.join(
-            BASE_DIR,
-            "results",
-            session_info["root_cause_name"],
-            session_info["session_id"],
+            RESULTS_DIR,
+            session.root_cause_name,
+            session.session_id,
             f"conversation_{name}.log",
         )
         os.makedirs(os.path.dirname(log_path), exist_ok=True)

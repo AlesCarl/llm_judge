@@ -85,7 +85,7 @@ class BasicReActAgent:
 
     def load_session(self):
         self.session = Session()
-        self.session.load_running_session()
+        self.session.load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
 
     async def run(self, task_description: str):
         self.load_session()

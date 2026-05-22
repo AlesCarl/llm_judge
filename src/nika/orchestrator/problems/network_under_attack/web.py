@@ -11,6 +11,7 @@ from nika.orchestrator.tasks.localization import (
 )
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 from nika.utils.logger import system_logger
 
 # ==================================================================
@@ -23,6 +24,15 @@ class WebDoSBase:
     root_cause_name: str = "web_dos_attack"
     symptom_desc: str = "Users reports high latency when accessing some web services."
     TAGS: str = ["http"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="web_dos_attack",
+        summary="Start AB-based DoS traffic from attacker to web target.",
+        fields=(
+            FailureParamField("host_name", "str", "Target web server host name."),
+            FailureParamField("attacker_device", "str", "Attacker host name."),
+        ),
+        example="nika failure inject web_dos_attack --set host_name=web0 --set attacker_device=h10",
+    )
 
     def __init__(self, scenario_name: NetworkEnvBase, **kwargs):
         super().__init__()
@@ -37,10 +47,6 @@ class WebDoSBase:
 
     def inject_fault(self):
         self.injector.inject_ab_attack(attacker_host=self.attacker_device, website=self.target_website)
-
-    def recover_fault(self):
-        self.injector.recover_ab_attack(attacker_host=self.attacker_device)
-
 
 class WebDoSDetection(WebDoSBase, DetectionTask):
     META = ProblemMeta(
@@ -74,4 +80,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     problem = WebDoSBase(scenario_name="dc_clos_service")
     # problem.inject_fault()
-    problem.recover_fault()

@@ -29,17 +29,8 @@ class MultiFaultBase(TaskBase):
         tasks = [loop.run_in_executor(None, fault.inject_fault) for fault in self.sub_faults]
         await asyncio.gather(*tasks)
 
-    async def _recover_fault_async(self):
-        loop = asyncio.get_running_loop()
-        tasks = [loop.run_in_executor(None, fault.recover_fault) for fault in self.sub_faults]
-        await asyncio.gather(*tasks)
-
     def inject_fault(self):
         asyncio.run(self._inject_fault_async())
-
-    def recover_fault(self):
-        asyncio.run(self._recover_fault_async())
-
 
 class MultiFaultDetection(MultiFaultBase, DetectionTask):
     META = ProblemMeta(

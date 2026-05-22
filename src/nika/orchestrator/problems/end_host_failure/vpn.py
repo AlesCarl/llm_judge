@@ -8,6 +8,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaBaseAPI
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 from nika.utils.logger import system_logger
 
 # ==========================================
@@ -19,6 +20,15 @@ class VPNMembershipMissingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_vpn_membership_missing"
     TAGS: str = ["vpn"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="host_vpn_membership_missing",
+        summary="Remove one host membership from VPN server config.",
+        fields=(
+            FailureParamField("host_name", "str", "Target host to remove from VPN."),
+            FailureParamField("host_name_2", "str", "VPN server host name."),
+        ),
+        example="nika failure inject host_vpn_membership_missing --set host_name=host_1 --set host_name_2=vpn_server",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -52,20 +62,6 @@ class VPNMembershipMissingBase:
         )
         self.logger.info(f"Removed VPN membership of {self.target_host} on {self.vpn_server}.")
 
-    def recover_fault(self):
-        # restore the real conf
-        self.kathara_api.exec_cmd(
-            host_name=self.vpn_server,
-            command="mv /etc/wireguard/wg0.conf.bak /etc/wireguard/wg0.conf",
-        )
-        # restart the wg interface
-        self.kathara_api.exec_cmd(
-            host_name=self.vpn_server,
-            command="wg-quick down wg0 && wg-quick up wg0",
-        )
-        self.logger.info(f"Restored VPN membership of {self.target_host} on {self.vpn_server}.")
-
-
 class HostIncorrectDNSDetection(VPNMembershipMissingBase, DetectionTask):
     META = ProblemMeta(
         root_cause_category=VPNMembershipMissingBase.root_cause_category,
@@ -96,5 +92,4 @@ class HostIncorrectDNSRCA(VPNMembershipMissingBase, RCATask):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     host_ip_conflict = VPNMembershipMissingBase(scenario_name="rip_small_internet_vpn")
-    host_ip_conflict.recover_fault()
     host_ip_conflict.inject_fault()

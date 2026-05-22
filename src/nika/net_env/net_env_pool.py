@@ -44,12 +44,25 @@ def get_net_env_instance(scenario_name: str, **kwargs) -> NetworkEnvBase:
     """
     if scenario_name not in _NET_ENVS:
         raise ValueError(f"Network environment '{scenario_name}' not found in the pool.")
-    return _NET_ENVS[scenario_name](**kwargs)
+    lab_name = kwargs.pop("lab_name", None)
+    instance = _NET_ENVS[scenario_name](**kwargs)
+    if lab_name:
+        instance.name = lab_name
+        instance.lab.name = lab_name
+    return instance
 
 
 def list_all_net_envs() -> dict[str, NetworkEnvBase]:
     """List all available network environment names."""
     return _NET_ENVS
+
+
+def scenario_requires_topo_tier(scenario_name: str) -> bool:
+    """Return True if this scenario's lab expects an explicit topo tier (s/m/l)."""
+    if scenario_name not in _NET_ENVS:
+        raise ValueError(f"Network environment '{scenario_name}' not found in the pool.")
+    topo_size = getattr(_NET_ENVS[scenario_name], "TOPO_SIZE", None)
+    return isinstance(topo_size, list)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 from nika.utils.logger import system_logger
 
 logger = system_logger
@@ -21,6 +22,15 @@ class P4HeaderDefinitionErrorBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_header_definition_error"
     TAGS: str = ["p4"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="p4_header_definition_error",
+        summary="Inject P4 header definition syntax error and restart switch.",
+        fields=(
+            FailureParamField("host_name", "str", "Target BMv2 switch name."),
+            FailureParamField("p4_name", "str", "P4 program name (without suffix)."),
+        ),
+        example="nika failure inject p4_header_definition_error --set host_name=s1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -44,19 +54,6 @@ class P4HeaderDefinitionErrorBase:
             self.faulty_devices[0],
             f"./hostlab/{self.faulty_devices[0]}.startup",
         )
-
-    def recover_fault(self):
-        # restore the original p4 file
-        self.kathara_api.exec_cmd(self.faulty_devices[0], "cp {self.p4_name}.p4.bak {self.p4_name}.p4")
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "pkill -f simple_switch",
-        )
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            f"./hostlab/{self.faulty_devices[0]}.startup",
-        )
-
 
 class P4CompilationErrorHeaderDetection(P4HeaderDefinitionErrorBase, DetectionTask):
     META = ProblemMeta(
@@ -94,6 +91,15 @@ class P4CompilationErrorParserStateBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_compilation_error_parser_state"
     TAGS: str = ["p4"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="p4_compilation_error_parser_state",
+        summary="Break P4 parser state syntax and restart switch.",
+        fields=(
+            FailureParamField("host_name", "str", "Target BMv2 switch name."),
+            FailureParamField("p4_name", "str", "P4 program name (without suffix)."),
+        ),
+        example="nika failure inject p4_compilation_error_parser_state --set host_name=s1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -117,19 +123,6 @@ class P4CompilationErrorParserStateBase:
             self.faulty_devices[0],
             f"./hostlab/{self.faulty_devices[0]}.startup",
         )
-
-    def recover_fault(self):
-        # restore the original p4 file
-        self.kathara_api.exec_cmd(self.faulty_devices[0], f"cp {self.p4_name}.p4.bak {self.p4_name}.p4")
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "pkill -f simple_switch",
-        )
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            f"./hostlab/{self.faulty_devices[0]}.startup",
-        )
-
 
 class P4CompilationErrorParserStateDetection(P4CompilationErrorParserStateBase, DetectionTask):
     META = ProblemMeta(
@@ -167,6 +160,12 @@ class P4TableEntryMissingBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_table_entry_missing"
     TAGS: str = ["p4"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="p4_table_entry_missing",
+        summary="Clear P4 table entries on one switch.",
+        fields=(FailureParamField("host_name", "str", "Target BMv2 switch name."),),
+        example="nika failure inject p4_table_entry_missing --set host_name=s1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -182,15 +181,6 @@ class P4TableEntryMissingBase:
             "simple_switch_CLI <<< 'table_clear MyIngress.ipv4_lpm'",
         )
         logger.info(f"Injected fault: Deleted table entries on {self.faulty_devices[0]}")
-
-    def recover_fault(self):
-        # re-add the table entry
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "simple_switch_CLI <<< $(cat commands.txt)",
-        )
-        logger.info(f"Recovered fault: Re-added table entries on {self.faulty_devices[0]}")
-
 
 class P4TableEntryMissingDetection(P4TableEntryMissingBase, DetectionTask):
     META = ProblemMeta(
@@ -228,6 +218,12 @@ class P4TableEntryMisconfigBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_table_entry_misconfig"
     TAGS: str = ["p4"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="p4_table_entry_misconfig",
+        summary="Rewrite P4 table entries with incorrect MAC mapping.",
+        fields=(FailureParamField("host_name", "str", "Target BMv2 switch name."),),
+        example="nika failure inject p4_table_entry_misconfig --set host_name=s1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -251,23 +247,6 @@ class P4TableEntryMisconfigBase:
             "simple_switch_CLI <<< $(cat commands.txt)",
         )
         logger.info(f"Injected fault: Modified table entries on {self.faulty_devices[0]}")
-
-    def recover_fault(self):
-        # restore the original commands.txt
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "simple_switch_CLI <<< 'table_clear MyIngress.ipv4_lpm'",
-        )
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "simple_switch_CLI <<< $(cat commands.txt.bak)",
-        )
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "rm commands.txt.bak",
-        )
-        logger.info(f"Recovered fault: Restored table entries on {self.faulty_devices[0]}")
-
 
 class P4TableEntryMisconfigDetection(P4TableEntryMisconfigBase, DetectionTask):
     META = ProblemMeta(
@@ -306,6 +285,12 @@ class P4MPLSLabelLimitExceededBase:
     root_cause_name = "mpls_label_limit_exceeded"
 
     TAGS: str = ["mpls"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="mpls_label_limit_exceeded",
+        summary="Lower MPLS label limit in P4 program and restart switch.",
+        fields=(FailureParamField("host_name", "str", "Target BMv2 switch name."),),
+        example="nika failure inject mpls_label_limit_exceeded --set host_name=s1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -329,20 +314,6 @@ class P4MPLSLabelLimitExceededBase:
             f"./hostlab/{self.faulty_devices[0]}.startup",
         )
         self.logger.info(f"Injected MPLS label limit exceeded fault on device: {self.faulty_devices[0]}")
-
-    def recover_fault(self):
-        # restore the original P4 program
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            "mv mpls.p4.bak mpls.p4 ; rm mpls.json",
-        )
-        self.kathara_api.exec_cmd(self.faulty_devices[0], "pkill -f simple_switch")
-        self.kathara_api.exec_cmd(
-            self.faulty_devices[0],
-            f"./hostlab/{self.faulty_devices[0]}.startup",
-        )
-        self.logger.info(f"Recovered MPLS label limit exceeded fault on device: {self.faulty_devices[0]}")
-
 
 class P4MPLSLabelLimitExceededDetection(P4MPLSLabelLimitExceededBase, DetectionTask):
     META = ProblemMeta(
@@ -375,4 +346,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     problem = P4TableEntryMisconfigBase()
     # problem.inject_fault()
-    problem.recover_fault()

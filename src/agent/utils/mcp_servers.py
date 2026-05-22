@@ -9,7 +9,7 @@ class MCPServerConfig:
         base_dir = os.getenv("BASE_DIR")
         self.mcp_server_dir = os.path.join(base_dir, "src/nika/service/mcp_server")
         self.session = Session()
-        self.session.load_running_session()
+        self.session.load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
 
     def load_config(self, if_submit: bool = False) -> dict:
         if if_submit:

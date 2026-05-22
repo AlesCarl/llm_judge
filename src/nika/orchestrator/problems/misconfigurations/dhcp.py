@@ -8,6 +8,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaBaseAPI
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 from nika.utils.logger import system_logger
 
 # ==================================================================
@@ -20,6 +21,15 @@ class DHCPMissingSubnetBase:
     root_cause_name: str = "dhcp_missing_subnet"
 
     TAGS: str = ["dhcp"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="dhcp_missing_subnet",
+        summary="Delete DHCP subnet config for one affected host subnet.",
+        fields=(
+            FailureParamField("host_name", "str", "DHCP server host name."),
+            FailureParamField("host_name_2", "str", "Affected client host name."),
+        ),
+        example="nika failure inject dhcp_missing_subnet --set host_name=dhcp0 --set host_name_2=client1",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -42,12 +52,6 @@ class DHCPMissingSubnetBase:
             dhcp_server=self.faulty_devices[0],
             subnet=subnet,
         )
-
-    def recover_fault(self):
-        self.injector.recover_deleted_subnet(
-            dhcp_server=self.faulty_devices[0],
-        )
-
 
 class DHCPMissingSubnetDetection(DHCPMissingSubnetBase, DetectionTask):
     META = ProblemMeta(
@@ -79,4 +83,3 @@ class DHCPMissingSubnetRCA(DHCPMissingSubnetBase, RCATask):
 if __name__ == "__main__":
     problem = DHCPMissingSubnetRCA(scenario_name="ospf_enterprise_dhcp")
     # problem.inject_fault()
-    # problem.recover_fault()

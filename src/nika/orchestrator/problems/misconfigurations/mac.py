@@ -8,6 +8,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.utils.failure_params import FailureParamField, FailureParamSchema
 from nika.utils.logger import system_logger
 
 # ==================================================================
@@ -19,6 +20,15 @@ class MacAddressConflictBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "mac_address_conflict"
     TAGS: str = ["mac"]
+    FAILURE_PARAM_SCHEMA = FailureParamSchema(
+        problem_name="mac_address_conflict",
+        summary="Assign duplicate MAC on one endpoint from its neighbor.",
+        fields=(
+            FailureParamField("host_name", "str", "Target host/device receiving conflicting MAC."),
+            FailureParamField("host_name_2", "str", "Peer device whose MAC is copied."),
+        ),
+        example="nika failure inject mac_address_conflict --set host_name=h1 --set host_name_2=h2",
+    )
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -44,15 +54,6 @@ class MacAddressConflictBase:
         self.logger.info(
             f"Injected MAC address conflict on {self.faulty_devices[0]} with MAC {target_mac} of {self.faulty_devices[1]}"
         )
-
-    def recover_fault(self):
-        random_mac = "12:34:56:78:9a:bb"
-        self.kathara_api.exec_cmd(
-            host_name=self.faulty_devices[0],
-            command=f"ip link set dev eth0 address {random_mac}",
-        )
-        self.logger.info(f"Recovered MAC address conflict on {self.faulty_devices[0]} by setting MAC to {random_mac}")
-
 
 class MacAddressConflictDetection(MacAddressConflictBase, DetectionTask):
     META = ProblemMeta(
@@ -85,4 +86,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     problem = MacAddressConflictBase(scenario_name="ospf_enterprise_static", topo_size="s")
     # problem.inject_fault()
-    # problem.recover_fault()

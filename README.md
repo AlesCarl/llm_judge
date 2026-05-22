@@ -77,8 +77,6 @@ newgrp docker
 Create a `.env` file under the base directory and set the following environment variables:
 
 ```shell
-BASE_DIR = <your_path_to_this_project>
-
 # if use Langsmith for observability
 # check langsmith documentation for more details
 LANGSMITH_TRACING="true"
@@ -100,113 +98,62 @@ OPENAI_API_KEY=<>
 OLLAMA_API_URL=<>
 ```
 
-## Build the required Docker images
+## Step by step guide
+You can follow the steps below to run a complete troubleshooting task with NIKA. Use the `nika` CLI.
 
-NIKA uses several customized images to support fault injection. Run 
+1. **List scenarios and start the network environment**
+
+   ```shell
+   nika env list
+   nika env run <scenario>                    # scenarios without topology tiers (e.g. simple_bgp)
+   nika env run <scenario> -t s             # scalable scenarios (tier: s, m, or l)
+   ```
+
+2. **List problems and inject faults**
+
+   ```shell
+   nika failure list
+   nika failure inject <problem_id> [<problem_id> ...]
+   ```
+
+3. **List agent options and run the agent**
+
+   ```shell
+   nika agent list
+   nika agent run -a react -b openai -m gpt-5-mini -n 20
+   ```
+
+4. **Evaluate the run** (numeric metrics, LLM judge, and CSV publish are separate; run any subset, then publish when you want one summary row and teardown)
+
+   ```shell
+   nika eval metrics
+   nika eval judge -b openai -m gpt-5-mini
+   nika eval publish
+   ```
+
+Full CLI documentation (benchmark batch mode, traffic types, parameter tables, and conventions) lives in **[src/nika/cli/README.md](src/nika/cli/README.md)**.
+
+### Optional: benchmark or traffic from the CLI
 
 ```shell
-bash src/nika/net_env/utils/DockerFiles/build_dockers.sh
+nika benchmark run
+nika benchmark run dc_clos_bgp --problem bgp_asn_misconfig -t s
+nika traffic list
+nika traffic run od --all-to-host host_1 --mbps 20 --interval 300 --background
 ```
 
-## Step by step guide
-You can follow the steps below to run a complete troubleshooting task with NIKA.
+## Run Unit Tests
 
-1. **Start the network environment**
-  Check the specific scenario and its parameters under `src/nika/net_env`.
-   ```shell
-   python3 src/scripts/step1_net_env_start.py --scenario <scenario> --topo_size <topo_size>
+```shell
+# run all unit tests
+uv run --with pytest pytest
 
-   # Example:
-   python3 src/scripts/step1_net_env_start.py --scenario simple_bgp --topo_size s
-   ```
+# verbose output
+uv run --with pytest pytest -v
 
-2. **Inject faults into the network environment**
-
-   ```shell
-   python3 src/scripts/step2_failure_inject.py --problem <problem_id>
-
-   # Example:
-   python3 src/scripts/step2_failure_inject.py --problem frr_service_down
-   ```
-
-3. **Run the AI agent to troubleshoot the network**
-    ```shell
-    python3 src/scripts/step3_agent_run.py --agent_type <agent_type> --llm_backend <llm_backend> --model <model> --max_steps <max_steps>
-
-    # Example:
-    python3 src/scripts/step3_agent_run.py --agent_type react --llm_backend openai --model gpt-5-mini --max_steps 20
-    ```
-
-4. **Evaluate the agent's performance**
-
-    ```shell
-    python3 src/scripts/step4_result_eval.py --judge_llm_backend <judge_llm_backend> --judge_model <judge_model>
-
-    # Example:
-    python3 src/scripts/step4_result_eval.py --judge_llm_backend openai --judge_model gpt-5-mini
-    ```
-
-**Command-line arguments**
-- <scenario>: Name of the network scenario to start (default: simple_bgp). Full list in `src/nika/net_env` and `benchmark/benchmark_selected.csv`.
-- <topo_size>: Topology size (s/m/l). Only required for certain scenarios.
-- <problem_id>: ID of the problem to inject (default: frr_service_down). Full list in `src/nika/orchestrator/problems` and `benchmark/benchmark_selected.csv`.
-- <llm_backend>, <judge_llm_backend>: The LLM backend to use (e.g. openai, ollama, deepseek). Extend `src/agent/llm/model_factory.py` to include more.
-- <model>, <judge_model>: LLM backend model to use (e.g. gpt-4).
-- <agent_type>: Type of the AI agent to use (for now only **react** is supported).
-- <max_steps>: Maximum steps for the agent to take (default: 20).
-
-### Benchmark Runner
-
-Alternatively, you can run the `benchmark/run_benchmark.py` script to execute all steps for all predefined incidents in the benchmark suite. This script will automatically start the network environment, inject faults, run the AI agent, and evaluate the results.
-
-1. Run benchmarks from a CSV file (default mode). By default, the script runs all benchmark cases defined in `benchmark/benchmark_selected.csv` file.
-
-    ```shell
-    python3 benchmark/run_benchmark.py
-    ```
-
-    or specify a CSV file:
-
-    ```shell
-    python3 benchmark/run_benchmark.py --benchmark_csv ./benchmark_selected.csv
-    ```
-    **CSV format requirements**
-
-    The CSV file must contain **problem, scenario, and topo_size** columns. Example:
-
-    ```csv
-    problem,scenario,topo_size
-    bgp_asn_misconfig,dc_clos_bgp,s
-    link_down,dc_clos_bgp,m
-    ```
-
-    Each row in the CSV will be executed sequentially using the same agent and evaluation configuration.
-
-2. Run a single benchmark
-To run one specific benchmark, you must provide all three of the following arguments:
-
-    ```shell
-    python3 benchmark/run_benchmark.py \
-      --problem bgp_asn_misconfig \
-      --scenario dc_clos_bgp \
-      --topo_size s
-    ```
-
-3. Full example with custom settings
-
-    ```shell
-    python3 benchmark/run_benchmark.py \
-      --problem bgp_asn_misconfig \
-      --scenario dc_clos_bgp \
-      --topo_size s\
-      --agent_type react \
-      --llm_backend openai \
-      --model gpt-5-mini \
-      --max_steps 30 \
-      --judge_llm_backend gpt-5-mini \
-      --judge_model gpt-5-mini \
-      --destroy_env
-    ```
+# run only selected test files
+uv run --with pytest pytest tests/test_session.py -v
+```
 
 <h1 id="🛠️usage">🛠️ Usage</h1>
 
@@ -391,7 +338,7 @@ agent = MCPAgent(
 <h1 id="📚cite">📚 Cite</h1>
 
 ```bibtex
-@misc{wang2025networkarenabenchmarkingai,
+@misc{nika,
       title={A Network Arena for Benchmarking AI Agents on Network Troubleshooting}, 
       author={Zhihao Wang and Alessandro Cornacchia and Alessio Sacco and Franco Galante and Marco Canini and Dingde Jiang},
       year={2025},
@@ -399,6 +346,24 @@ agent = MCPAgent(
       archivePrefix={arXiv},
       primaryClass={cs.NI},
       url={https://arxiv.org/abs/2512.16381}, 
+}
+```
+
+```bibtex
+@inproceedings{llm4netlab,
+author = {Wang, Zhihao and Cornacchia, Alessandro and Galante, Franco and Centofanti, Carlo and Sacco, Alessio and Jiang, Dingde},
+title = {Towards a Playground to Democratize Experimentation and Benchmarking of AI Agents for Network Troubleshooting},
+year = {2025},
+isbn = {9798400720871},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3748496.3748990},
+doi = {10.1145/3748496.3748990},
+booktitle = {Proceedings of the 1st Workshop on Next-Generation Network Observability},
+pages = {1–3},
+numpages = {3},
+location = {Coimbra, Portugal},
+series = {NGNO '25}
 }
 ```
 
