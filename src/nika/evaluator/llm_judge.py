@@ -58,41 +58,42 @@ class LLMJudge(BaseJudge):
 
 
 
-def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str = None) -> str:
-        """Evaluate the agent's performance based on the problem description, network environment info, and action history.
+    def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str = None) -> str:
+            """Evaluate the agent's performance based on the problem description, network environment info, and action history.
 
-        ### Un singolo LLM legge trace+ground_truth e produce direttamente il JudgeResponse
+            ### Un singolo LLM legge trace+ground_truth e produce direttamente il JudgeResponse
 
-        Args:
-            problem_description: Description of the problem.
-            net_env_info: Information about the network environment.
-            trace_path: Path to the file containing the agent's action history.
-            save_path: Path to save the evaluation result.
+            Args:
+                problem_description: Description of the problem.
+                net_env_info: Information about the network environment.
+                trace_path: Path to the file containing the agent's action history.
+                save_path: Path to save the evaluation result.
 
-        Returns:
-            str: The evaluation result from the judge model.
-            int: The score extracted from the evaluation result.
-        """
-        with open(trace_path, "r") as f:
-            trace = f.read()
-        trace = self._parse_trace(trace)
+            Returns:
+                str: The evaluation result from the judge model.
+                int: The score extracted from the evaluation result.
+            """
+            with open(trace_path, "r") as f:
+                trace = f.read()
+            trace = self._parse_trace(trace)
 
-        self.prompt = self.prompt.format(
-            ground_truth=ground_truth,
-            trace=trace,
-        )
-        with tracing_context(enabled=False):
-            evaluation: JudgeResponse = self.llm.invoke(self.prompt)
+            self.prompt = self.prompt.format(
+                ground_truth=ground_truth,
+                trace=trace,
+            )
+            with tracing_context(enabled=False):
+                evaluation: JudgeResponse = self.llm.invoke(self.prompt)
 
-        # Save evaluation result to file
-        
-        if save_path:
-            with open(save_path, "w+") as f:
-             f.write(evaluation.model_dump_json(indent=2))
+            # Save evaluation result to file
+            
+            if save_path:
+                with open(save_path, "w+") as f:
+                 f.write(evaluation.model_dump_json(indent=2))
 
 
 
-        return evaluation
+            return evaluation
+
 
 
 if __name__ == "__main__":

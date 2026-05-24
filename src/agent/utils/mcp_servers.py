@@ -49,7 +49,8 @@ class MCPServerConfig:
             server["env"] = {
                 "LAB_SESSION_ID": self.session.session_id,
                 "root_cause_name": self.session.root_cause_name,
-                "LAB_NAME": self.session.scenario_name,
+                #"LAB_NAME": self.session.scenario_name,
+                "LAB_NAME": self.session.lab_name,
                 "model": self.session.model,
                 "agent_type": self.session.agent_type,
             }

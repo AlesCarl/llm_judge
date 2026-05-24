@@ -51,6 +51,11 @@ def benchmark_run(
         "--judge-model",
         help="Model id for the judge.",
     ),
+    judge_type: str = typer.Option(
+        "single",
+        "--judge-type",
+        help="Judge strategy: 'single' (LLMJudge) or 'multi' (Critic/Advocate debate).",
+    ),
     destroy_env: bool = typer.Option(
         False,
         "--destroy-env/--no-destroy-env",
@@ -81,6 +86,7 @@ def benchmark_run(
             max_steps=max_steps,
             judge_llm_backend=judge_backend,
             judge_model=judge_model,
+            judge_type=judge_type,
             destroy_env=destroy_env,
         )
         return
@@ -97,5 +103,6 @@ def benchmark_run(
         max_steps=max_steps,
         judge_llm_backend=judge_backend,
         judge_model=judge_model,
+        judge_type=judge_type,
         destroy_env=destroy_env,
     )

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
+import time
+
+
 
 from nika.config import BASE_DIR
 from nika.net_env.net_env_pool import get_net_env_instance, scenario_requires_topo_tier
@@ -11,6 +15,12 @@ from nika.workflows.agent_run import start_agent
 from nika.workflows.failure_inject import inject_failure
 from nika.workflows.net_env_start import start_net_env
 from nika.workflows.session_eval import eval_results
+
+logger = logging.getLogger(__name__)
+
+
+
+
 
 
 def default_benchmark_csv_path() -> str:
@@ -29,6 +39,7 @@ def run_single_benchmark(
     max_steps: int,
     judge_llm_backend: str,
     judge_model: str,
+    judge_type: str ,
     destroy_env: bool,
 ) -> None:
     """
@@ -44,6 +55,7 @@ def run_single_benchmark(
         max_steps: Maximum agent steps
         judge_llm_backend: LLM backend used for evaluation
         judge_model: Model used for evaluation
+        judge_type: Judge strategy ('single' or 'multi')
         destroy_env: Whether to destroy the network environment after evaluation
     """
     print(f"Running benchmark for Problem: {problem}, Scenario: {scenario}, Topo Size: {topo_size}")
@@ -55,6 +67,8 @@ def run_single_benchmark(
         tier = None
 
     session_id = start_net_env(scenario, tier, redeploy=True)
+
+
 
     inject_failure(problem_names=[problem], session_id=session_id)
 
@@ -69,17 +83,12 @@ def run_single_benchmark(
     eval_results(
         judge_llm_backend=judge_llm_backend,
         judge_model=judge_model,
+        judge_type=judge_type,        # 
         destroy_env=destroy_env,
         session_id=session_id,
     )
 
-    if destroy_env:
-        net_env_kwargs: dict = {}
-        if tier is not None:
-            net_env_kwargs["topo_size"] = tier
-        net_env = get_net_env_instance(scenario, **net_env_kwargs)
-        if net_env.lab_exists():
-            net_env.undeploy()
+  
 
 
 def run_benchmark_from_csv(
@@ -90,6 +99,7 @@ def run_benchmark_from_csv(
     max_steps: int,
     judge_llm_backend: str,
     judge_model: str,
+    judge_type: str ,
     destroy_env: bool,
 ) -> None:
     """
@@ -114,5 +124,6 @@ def run_benchmark_from_csv(
                 max_steps=max_steps,
                 judge_llm_backend=judge_llm_backend,
                 judge_model=judge_model,
+                judge_type=judge_type,        #
                 destroy_env=destroy_env,
             )

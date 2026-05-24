@@ -3,6 +3,8 @@
 import json
 import os
 import textwrap
+import time
+
 from pathlib import Path
 
 from nika.evaluator.llm_judge import JudgeResponse, LLMJudge
@@ -18,7 +20,11 @@ from nika.utils.logger import system_logger
 from nika.utils.session import Session
 from nika.utils.session_store import SessionStore
 
+from langchain_core.exceptions import OutputParserException
+
+
 logger = system_logger
+
 
 EVAL_METRICS_FILENAME = "eval_metrics.json"
 
@@ -140,24 +146,47 @@ def run_llm_judge(
     trace_path = os.path.join(session.session_dir, "conversation_diagnosis_agent.log")
     logger.info(f"Evaluating session {session.session_id} using LLM-as-Judge (judge_type={judge_type}).")
 
+
+    start_time = time.time()
+
     if judge_type == "multi":
         llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
     else:
         llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
 
-    llm_judge.evaluate_agent(
-        ground_truth=textwrap.dedent(
-            f"""\
-                The root cause is {gt["root_cause_name"]}.
-                The faulty devices are: {", ".join(gt["faulty_devices"])}.
-            """
-        ),
-        trace_path=trace_path,
-        save_path=f"{session.session_dir}/llm_judge.json",
-    )
-    judge_path = Path(session.session_dir) / "llm_judge.json"
-    if judge_path.exists():
-        session.update_session("llm_judge_json", json.loads(judge_path.read_text(encoding="utf-8")))
+    
+    ###
+    try:
+        llm_judge.evaluate_agent(
+            ground_truth=textwrap.dedent(
+                f"""\
+                    The root cause is {gt["root_cause_name"]}.
+                    The faulty devices are: {", ".join(gt["faulty_devices"])}.
+                """
+            ),
+            trace_path=trace_path,
+            save_path=f"{session.session_dir}/llm_judge.json",
+        )
+        eval_time = round(time.time() - start_time, 2)
+        logger.info(f"LLM Judge eval time: {eval_time}s")
+
+        judge_path = Path(session.session_dir) / "llm_judge.json"
+        if judge_path.exists():
+            data = json.loads(judge_path.read_text(encoding="utf-8"))
+            data["eval_time"] = eval_time
+            judge_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            session.update_session("llm_judge_json", data)
+
+    except OutputParserException as e:
+        eval_time = round(time.time() - start_time, 2)
+        logger.warning(f"LLM Judge output non parsabile come JSON. Salvato come .md. ({eval_time}s)")
+        md_path = Path(session.session_dir) / "llm_judge.md"
+        with open(md_path, "w") as f:
+            f.write(e.llm_output)
+
+    
+
+    
 
 
 def publish_session_eval(*, destroy_env: bool = True, session_id: str | None = None) -> None:
@@ -277,6 +306,7 @@ def publish_session_eval(*, destroy_env: bool = True, session_id: str | None = N
     session.clear_session()
 
 
+
 def eval_results(
     judge_llm_backend: str,
     judge_model: str,
@@ -286,6 +316,7 @@ def eval_results(
     session_id: str | None = None,
 ) -> None:
     """Run metrics, LLM judge, and publish in one call (benchmark / legacy pipeline)."""
+
     run_eval_metrics(session_id=session_id)
     run_llm_judge(judge_llm_backend, judge_model, judge_type=judge_type, session_id=session_id)
     publish_session_eval(destroy_env=destroy_env, session_id=session_id)
