@@ -231,7 +231,7 @@ def publish_session_eval(*, destroy_env: bool = True, session_id: str | None = N
         efficiency_score = judge_response.scores.efficiency.score
         clarity_score = judge_response.scores.clarity.score
         final_outcome_score = judge_response.scores.final_outcome.score
-        overall_score = judge_response.scores.overall_score.score
+        overall_score = judge_response.scores.overall_score
     else:
         relevance_score = correctness_score = efficiency_score = clarity_score = None
         final_outcome_score = overall_score = None
@@ -296,7 +296,13 @@ def publish_session_eval(*, destroy_env: bool = True, session_id: str | None = N
     net_env_kwargs = {}
     if session.scenario_topo_size is not None:
         net_env_kwargs["topo_size"] = session.scenario_topo_size
-    net_env = get_net_env_instance(session.scenario_name, **net_env_kwargs)
+    
+    # net_env = get_net_env_instance(session.scenario_name, **net_env_kwargs)
+    net_env = get_net_env_instance(session.scenario_name, lab_name=session.lab_name, **net_env_kwargs)
+
+    ## DEBUG:
+    #print(f"DEBUG: scenario_name={session.scenario_name}, lab_name={getattr(session, 'lab_name', 'NOT FOUND')}") 
+
     if destroy_env and net_env.lab_exists():
         net_env.undeploy()
     logger.info(f"Destroyed network environment: {session.scenario_name} with session ID: {session.session_id}")

@@ -45,7 +45,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Criteria evaluated by debaters (must match Scores field names)
-_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome", "overall_score"]
+_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome"]
 
 # Score gap threshold above which a criterion is considered divergent
 _CONSENSUS_THRESHOLD = 1
@@ -269,6 +269,7 @@ class MultiAgentJudge(BaseJudge):
         return "\n".join(lines)
 
 
+
     ## main 
 
     def evaluate_agent(
@@ -345,6 +346,15 @@ class MultiAgentJudge(BaseJudge):
         # Final synthesis - JudgeResponse
         logger.info("MultiAgentJudge — Synthesizing final JudgeResponse")
         transcript = self._build_transcript(rounds)
+        
+        
+        ## METRICS: save debate rounds for ** analysis
+
+        rounds_path = save_path.replace("llm_judge.json", "debate_rounds.json")
+        with open(rounds_path, "w+") as f:
+            json.dump(rounds, f, indent=2)
+
+
         evaluation: JudgeResponse = self._synthesize(transcript)
 
         with open(save_path, "w+") as f:

@@ -54,8 +54,7 @@ _DEBATER_JSON_SCHEMA = """\
     "correctness":   {{"score": <1-5>, "comment": "<justification>"}},
     "efficiency":    {{"score": <1-5>, "comment": "<justification>"}},
     "clarity":       {{"score": <1-5>, "comment": "<justification>"}},
-    "final_outcome": {{"score": <1-5>, "comment": "<justification>"}},
-    "overall_score": {{"score": <1-5>, "comment": "<justification>"}}
+    "final_outcome": {{"score": <1-5>, "comment": "<justification>"}}
   }},
   "reasoning": "<overall summary of your assessment>"
 }}\
@@ -71,13 +70,12 @@ Ground Truth:
 Agent Action Trace:
 {trace}
 
-Assess the agent across these six criteria (score each 1–5, where 1=poor, 5=excellent):
+Assess the agent across these five criteria (score each 1–5, where 1=poor, 5=excellent):
 1. Relevance     – how relevant the agent's actions were to the problem
 2. Correctness   – how correct the tools/commands used were
 3. Efficiency    – how efficient and well-ordered the actions were
 4. Clarity       – how clear and well-explained the reasoning was
 5. Final Outcome – whether the final answer matches the ground truth
-6. Overall Score – overall performance summary
 
 Respond with ONLY a JSON object matching this structure — no markdown, no extra text:
 """ + _DEBATER_JSON_SCHEMA
@@ -141,8 +139,7 @@ The JSON must follow exactly this structure:
     "correctness":   {{"score": <1-5>, "comment": "<string>"}},
     "efficiency":    {{"score": <1-5>, "comment": "<string>"}},
     "clarity":       {{"score": <1-5>, "comment": "<string>"}},
-    "final_outcome": {{"score": <1-5>, "comment": "<string>"}},
-    "overall_score": {{"score": <1-5>, "comment": "<string>"}}
+    "final_outcome": {{"score": <1-5>, "comment": "<string>"}}
   }},
   "overall_evaluation": "<string>",
   "reasoning_for_overall_score": "<string explaining why this overall score was given>"

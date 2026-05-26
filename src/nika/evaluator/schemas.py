@@ -17,7 +17,11 @@ class Scores(BaseModel):
     efficiency: Score = Field(..., description="How efficient and well-ordered the agent’s actions were.")
     clarity: Score = Field(..., description="How clear and well-explained the agent’s reasoning was.")
     final_outcome: Score = Field(..., description="Whether the final outcome existed and matched the ground truth.")
-    overall_score: Score = Field(..., description="Overall final score summarizing the total performance.")
+    # overall_score: Score = Field(..., description="Overall final score summarizing the total performance.")
+    @property
+    def overall_score(self) -> float:
+        return (self.relevance.score + self.correctness.score + self.efficiency.score +
+                self.clarity.score + self.final_outcome.score) / 5
 
 
 
