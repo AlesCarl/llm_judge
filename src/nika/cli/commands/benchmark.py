@@ -51,10 +51,15 @@ def benchmark_run(
         "--judge-model",
         help="Model id for the judge.",
     ),
+    
     judge_type: str = typer.Option(
         "single",
         "--judge-type",
-        help="Judge strategy: 'single' (LLMJudge) or 'multi' (Critic/Advocate debate).",
+        help=(
+            "Judge strategy: 'single' (LLMJudge), 'multi' "
+            "(Critic/Advocate debate with consensus + synthesis), or "
+            "'multi_role' (ChatEval-style N-role sequential debate)."
+        ),
     ),
     destroy_env: bool = typer.Option(
         False,

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from nika.evaluator.llm_judge import JudgeResponse, LLMJudge
 from nika.evaluator.multi_agent_judge import MultiAgentJudge
+from nika.evaluator.multi_role_debate.multi_role_debate_judge import MultiRoleDebateJudge
+
 from nika.evaluator.result_log import EvalResult, record_eval_result
 from nika.evaluator.trace_parser import AgentTraceParser
 from nika.net_env.net_env_pool import get_net_env_instance
@@ -134,8 +136,10 @@ def run_llm_judge(
     Args:
         judge_llm_backend: LLM provider (openai, ollama, deepseek).
         judge_model: Model id for the chosen backend.
-        judge_type: ``single`` for LLMJudge, ``multi`` for MultiAgentJudge (Critic/Advocate debate).
-        session_id: Target session id (auto-detected when only one session is running).
+        judge_type: ``single`` for LLMJudge, 
+                    ``multi`` for MultiAgentJudge (Critic/Advocate debate with consensus + synthesis),
+                    ``multi_role`` for MultiRoleDebateJudge (ChatEval-style
+            N-role sequential debate with numeric aggregation).        session_id: Target session id (auto-detected when only one session is running).
     """
     session = Session()
     session.load_running_session(session_id=session_id)
@@ -151,6 +155,8 @@ def run_llm_judge(
 
     if judge_type == "multi":
         llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    elif judge_type == "multi_role":
+        llm_judge = MultiRoleDebateJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
     else:
         llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
 

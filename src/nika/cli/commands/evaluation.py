@@ -27,11 +27,17 @@ def eval_judge(
         help="LLM provider for the judge (openai, ollama, deepseek).",
     ),
     judge_model: str = typer.Option(..., "-m", "--model", help="Judge model id."),
-    judge_type: str = typer.Option(
+
+        judge_type: str = typer.Option(
         "single",
         "--judge-type",
-        help="Judge strategy: 'single' (LLMJudge) or 'multi' (Critic/Advocate debate).",
+        help=(
+            "Judge strategy: 'single' (LLMJudge), 'multi' "
+            "(Critic/Advocate debate with consensus + synthesis), or "
+            "'multi_role' (ChatEval-style N-role sequential debate)."
+        ),
     ),
+
     session_id: str | None = typer.Option(None, "--session-id", help="Target session id (lab_hash)."),
 ) -> None:
     """Run LLM-as-judge only; write llm_judge.json."""
