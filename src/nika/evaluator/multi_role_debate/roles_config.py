@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 ### Shared prompt fragments
 
 # Shared template used by every debater each turn. Placeholders are filled
-# at runtime by the orchestrator (string.Template safe_substitute).
+# at runtime by the orchestrator .
 #   ${ground_truth}    — task ground truth
 #   ${trace}           — parsed agent action trace
 #   ${role_description}— persona of the current debater
@@ -48,6 +48,7 @@ ${final_prompt}
 
 
 # Instruction injected ONLY in the final round, forcing structured scores.
+
 DEFAULT_FINAL_PROMPT = """\
 This is the final round. Provide your final judgement as a JSON object.
 Remember: you are not required to match other referees' scores — judge
@@ -77,11 +78,7 @@ class RoleConfig:
     name: str
     role_description: str
     temperature: float = 0.3
-    # Optional per-role model override. When None, the debate's default model
-    # (passed to ChatEvalJudge) is used.
     model: str | None = None
-    # Per-role final-round instruction. When None, falls back to
-    # DebateConfig.final_prompt.
     final_prompt: str | None = None
 
 

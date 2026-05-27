@@ -5,9 +5,7 @@ then we collapse the panel into a single JudgeResponse via simple per-criterion 
 
 Aggregation rules:
   - Per-criterion score: arithmetic mean across debaters, rounded to
-    the nearest integer (Scores schema requires int 1-5). Ties handled
-    by Python's banker's rounding, the panel size is
-    small and the impact on the final integer is symmetric.
+    the nearest integer (Scores schema requires int 1-5).
   - Per-criterion comment: concatenated debater comments, each prefixed
     with the role name, so the JudgeResponse keeps the diversity of
     perspectives in plain text.
@@ -72,6 +70,7 @@ def aggregate_responses(
             "No debater produced a parseable DebaterResponse — "
             "cannot aggregate into JudgeResponse."
         )
+    
     if len(valid) < len(responses):
         skipped = [
             name for name, r in zip(role_names, responses) if r is None

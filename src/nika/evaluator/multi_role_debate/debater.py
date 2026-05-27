@@ -1,6 +1,6 @@
 """Single debate participant for the Multi-Role Debate judge.
 
-Mirrors ChatEval's per-agent loop: every turn the debater receives the
+Every turn the debater receives the
 shared conversation (its own past statements + other debaters' past
 statements as visible context) and produces a new statement.
 
@@ -93,11 +93,12 @@ class RoleDebater:
     ### main
 
     def speak(self) -> str:
-        """Invoke the LLM on the current message list and return the reply.
+        """Invoke the *LLM* on the current message list and return the reply.
 
         If structured-output mode is active (use_structured_output was
         called) the reply is the JSON serialization of the parsed
         pydantic object; otherwise it's the raw text.
+
         The reply is appended to the message list as an AIMessage so the
         next turn has it in context.
         """
@@ -112,6 +113,8 @@ class RoleDebater:
         self.add_assistant_message(answer)
         logger.debug("[%s]\n%s", self.name, answer)
         return answer
+
+
 
     ### introspection
 

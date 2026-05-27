@@ -1,4 +1,4 @@
-"""Multi-Role Debate orchestrator .
+"""Multi-Role Debate orchestrator 
 
 Drives N RoleDebater participants through sequential rounds of free
 discussion followed by a final structured-scoring round. Returns the
@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 
+# in round1:  _initial_user_prompt()
+
 _CONTINUATION_PROMPT = """\
 The other referees have spoken (their statements are visible above).
 Consider their points: refine, defend, or update your position based on
@@ -50,9 +52,9 @@ class MultiRoleDebateJudge(BaseJudge):
 
     Workflow:
       1. Build N RoleDebater players from a DebateConfig.
-      2. Each debater is primed with its role_description (system
-         prompt). Round 1 receives the full task prompt (ground truth
-         + trace); later rounds receive a short continuation prompt.
+      2. Each debater is primed with its role_description (system prompt). 
+         Round 1 receives the full task prompt (ground truth + trace); 
+         later rounds receive a short continuation prompt.
       3. Run num_rounds rounds sequentially. Within a round, debaters
          speak in config order; each sees the previous statements
          (current round so far + all prior rounds) as visible context.
@@ -109,6 +111,7 @@ class MultiRoleDebateJudge(BaseJudge):
             final_prompt="",
         )
 
+
     def _continuation_prompt(self, role: RoleConfig, is_final: bool) -> str:
         """Build the per-turn message for rounds 2..N (short)."""
         final_prompt = ""
@@ -122,20 +125,24 @@ class MultiRoleDebateJudge(BaseJudge):
 
 
 
-    ### debate ### 
+    ### debate ###  main loop and transcript assembly
 
     def run_debate(
         self, ground_truth: str, trace: str
     ) -> tuple[str, list[DebaterResponse | None]]:
-        """Run the full multi-role debate and return its outcome.
+        
+        """
+        Run the full multi-role debate and return its outcome.
 
         Returns:
             (transcript, final_responses)
-              transcript: human-readable text of all rounds.
-              final_responses: list aligned with self.config.roles.
+             
+             - transcript: human-readable text of all rounds.
+             - final_responses: list aligned with self.config.roles.
                   Each entry is the parsed DebaterResponse from the
-                  final round, or None if parsing failed.
+                  final round
         """
+
         roles = self.config.roles
         num_rounds = self.config.num_rounds
         if num_rounds < 1:
@@ -144,7 +151,7 @@ class MultiRoleDebateJudge(BaseJudge):
             raise ValueError("DebateConfig.roles is empty")
 
         debaters = [self._build_debater(r) for r in roles]
-        # statements[round_idx][role_idx] = raw reply (text or JSON string)
+
         statements: list[list[str]] = []
 
         for round_idx in range(num_rounds):
@@ -160,7 +167,8 @@ class MultiRoleDebateJudge(BaseJudge):
 
 
             for i, (role, debater) in enumerate(zip(roles, debaters)):
-                # 1. Inject peer statements not yet seen by this debater.
+
+                # 1. Inject peer statements not yet seen by this debater
                 self._inject_pending_peers(
                     debater=debater,
                     roles=roles,
@@ -171,7 +179,7 @@ class MultiRoleDebateJudge(BaseJudge):
                 )
 
 
-                # 2. Add the per-turn task prompt.
+                # 2. Add the task prompt (round 1) or continuation prompt (round 2+)
                 if round_idx == 0:
                     user_msg = self._initial_user_prompt(role, ground_truth, trace)
                 else:
@@ -196,20 +204,14 @@ class MultiRoleDebateJudge(BaseJudge):
 
                 round_statements.append(reply)
 
-                #_sep = "─" * 60
-                #print(f"\n{_sep}")
-                #print(f"  Round {round_idx + 1}/{num_rounds}  │  {role.name}")
-                #print(_sep)
-                #print(reply)
 
             statements.append(round_statements)
 
 
-            
-
         transcript = self._build_transcript(roles, statements)
         final_responses = self._parse_final_responses(statements[-1])
         return transcript, final_responses
+
 
 
     ### peer feed
@@ -274,13 +276,16 @@ class MultiRoleDebateJudge(BaseJudge):
 
     ### API
 
+    # Main wrappr 
+
     def evaluate_agent(
         self, ground_truth: str, trace_path: str, save_path: str
     ) -> JudgeResponse:
-        """Full BaseJudge entry point.
+        """
+        Full BaseJudge entry point.
 
         Runs the debate, persists transcript + per-debater responses,
-        then aggregates into a JudgeResponse (placeholder in Step 3).
+        then aggregates into a JudgeResponse.
         """
         with open(trace_path, "r") as f:
             raw_trace = f.read()
