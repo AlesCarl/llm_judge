@@ -4,33 +4,42 @@ from pathlib import Path
 from nika.evaluator.metrics.krippendorff_alpha import compute_krippendorff_alpha
 from nika.evaluator.metrics.opinion_shift import compute_opinion_shift
 
+from nika.evaluator.metrics.spearman_correlation import compute_spearman
+
+import argparse
+
 
 RESULTS_DIR = Path("results")
 
-def compute_all(results_dir: Path = RESULTS_DIR) -> None:
+def compute_all(results_dir: Path = RESULTS_DIR, judge_type: str = "all") -> None:
+
+    paths_multi      = list(results_dir.rglob("debate_rounds.json"))
+    paths_multi_role = list(results_dir.rglob("debate_responses.json"))
+
+    if judge_type == "multi":
+        all_paths = paths_multi
+    elif judge_type == "multi_role":
+        all_paths = paths_multi_role
+    else:
+        all_paths = paths_multi + paths_multi_role
 
 
-    paths = list(results_dir.rglob("debate_rounds.json"))
-    # filter only "host_crash"
-    # paths = list(Path("results/host_crash").rglob("debate_rounds.json"))
 
-    
-    if not paths:
-        print("No debate_rounds.json found.")
+    if not all_paths:
+        print("No debate files found (debate_rounds.json or debate_responses.json).")
         return
 
-    print(f"Found {len(paths)} runs.\n")
+    print(f"Found {len(paths_multi)} multi runs, {len(paths_multi_role)} multi_role runs.\n")
 
 
-
-    alpha = compute_krippendorff_alpha([str(p) for p in paths])
+    # --- Krippendorff alpha ---
+    alpha = compute_krippendorff_alpha([str(p) for p in all_paths])
     print(f"Krippendorff alpha:      {alpha}")
 
 
+    # --- Opinion Shift ---
+    opinion_shift = compute_opinion_shift([str(p) for p in all_paths])
 
-
-    opinion_shift = compute_opinion_shift([str(p) for p in paths])
-    
     print("\nOpinion Shift:")
     print("  Intra-agent shift (Round 1 → Last Round):")
     for debater, shifts in opinion_shift["intra_agent_shift"].items():
@@ -48,15 +57,34 @@ def compute_all(results_dir: Path = RESULTS_DIR) -> None:
     print(f"\n  Avg rounds to consensus: {opinion_shift['avg_rounds_to_consensus']}")
 
 
+    # --- Spearman ---
+    print("\n--- Predictive Validity (Spearman ρ) ---")
+    compute_spearman(results_dir)
+
+
+    ##  NB: test_retest chiama davvero l'LLM N volte 
+    # -- non ha senso chiamarla automaticamente su tutti i risultati
+    # -- legge "conversation_diagnosis_agent.log" + "ground_truth.json"
+
+
 
     # latency_mult  = ...
 
+
+
 if __name__ == "__main__":
-    compute_all()
-
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--judge-type",
+        choices=["multi", "multi_role", "all"],
+        default="all",
+    )
+    args = parser.parse_args()
+    compute_all(judge_type=args.judge_type)
 
 
 ## run it with:
-# python -m nika.evaluator.metrics.compute_metrics
+# python -m nika.evaluator.metrics.compute_metrics --judge-type multi
+# python -m nika.evaluator.metrics.compute_metrics --judge-type multi_role
+# python -m nika.evaluator.metrics.compute_metrics --judge-type all  
 

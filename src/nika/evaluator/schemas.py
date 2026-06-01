@@ -36,5 +36,6 @@ class DebaterResponse(BaseModel):
     """Output produced by each debate participant (critic & advocate)"""
     scores: Scores = Field(..., description="Per-criterion scores with justification.")
     reasoning: str = Field(..., description="Overall reasoning summary supporting the scores.")
-    # JudgeResponse invece rimane l'output finale
+    
+    # JudgeResponse is the final output
 

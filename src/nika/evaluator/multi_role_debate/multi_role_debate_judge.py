@@ -132,7 +132,7 @@ class MultiRoleDebateJudge(BaseJudge):
     ) -> tuple[str, list[DebaterResponse | None]]:
         
         """
-        Run the full multi-role debate and return its outcome.
+        Run the full "multi-role debate" and return its outcome.
 
         Returns:
             (transcript, final_responses)
@@ -187,7 +187,7 @@ class MultiRoleDebateJudge(BaseJudge):
                 debater.add_user_message(user_msg)
 
 
-                # 3. Switch to structured output for the final round.
+                # 3** . Switch to structured output for the final round.
                 if is_final:
                     debater.use_structured_output(DebaterResponse)
 
@@ -276,7 +276,7 @@ class MultiRoleDebateJudge(BaseJudge):
 
     ### API
 
-    # Main wrappr 
+    # Main wrapper 
 
     def evaluate_agent(
         self, ground_truth: str, trace_path: str, save_path: str
@@ -291,22 +291,31 @@ class MultiRoleDebateJudge(BaseJudge):
             raw_trace = f.read()
         trace = self._parse_trace(raw_trace)
 
+
         transcript, final_responses = self.run_debate(ground_truth, trace)
+
 
         # Persist artefacts (transcript + per-debater raw responses).
         save = Path(save_path)
         transcript_path = save.with_name("debate_transcript.txt")
         responses_path = save.with_name("debate_responses.json")
         transcript_path.write_text(transcript, encoding="utf-8")
+        
+        
         responses_path.write_text(
             json.dumps(
-                [r.model_dump() if r else None for r in final_responses],
+                {
+                    role.name: (r.model_dump() if r is not None else None)
+                    for role, r in zip(self.config.roles, final_responses)
+                },
                 indent=2,
             ),
             encoding="utf-8",
+            
         )
         logger.info("Saved transcript → %s", transcript_path)
         logger.info("Saved debater responses → %s", responses_path)
+
 
        # Aggregate per-debater scores into a single JudgeResponse
        # numeric averaging across the panel

@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _CRITERIA = ("relevance", "correctness", "efficiency", "clarity", "final_outcome")
 
 
+
 def aggregate_responses(
     responses: list[DebaterResponse | None],
     role_names: list[str],

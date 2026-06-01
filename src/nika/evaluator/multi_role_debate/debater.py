@@ -47,6 +47,7 @@ class RoleDebater:
 
 
    
+
    ### setup
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -64,6 +65,7 @@ class RoleDebater:
     def disable_structured_output(self) -> None:
         """Revert to free-form text generation."""
         self._structured_llm = None
+
 
 
 
