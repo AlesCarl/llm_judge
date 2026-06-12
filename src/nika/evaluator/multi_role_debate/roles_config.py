@@ -78,6 +78,7 @@ class RoleConfig:
     name: str
     role_description: str
     temperature: float = 0.3
+    scoring_temperature: float = 0.0   
     model: str | None = None
     final_prompt: str | None = None
 

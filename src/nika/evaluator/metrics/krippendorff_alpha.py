@@ -1,5 +1,5 @@
 """
-Krippendorff α — inter-rater reliability among MultiAgentJudge debaters.
+Krippendorff alpha — inter-rater reliability among MultiAgentJudge debaters.
 
 Uses Round 1 scores (independent evaluation) since subsequent rounds are
 influenced by the debate and would artificially inflate agreement.
@@ -18,35 +18,6 @@ import krippendorff
 from pathlib import Path
 
 _CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome", "overall_score"]
-
-def _load_multi_role_scores(debate_responses_path: str) -> dict[str, dict[str, int | float]] | None:
-    """Extract per-debater scores from debate_responses.json (multi_role format).
-
-    The file is {debater_name: DebaterResponse} — final round only.
-    """
-    try:
-        with open(debate_responses_path) as f:
-            data = json.load(f)
-        
-        if isinstance(data, list):
-            return None  # skip, no role names available
-
-
-        result = {}
-        for debater_name, response in data.items():
-            if response is None:
-                continue
-            scores = response["scores"]
-            criteria_scores = {c: scores[c]["score"] for c in _CRITERIA if c != "overall_score"}
-            criteria_scores["overall_score"] = round(
-                sum(criteria_scores[c] for c in _CRITERIA if c != "overall_score") / 5, 2
-            )
-            result[debater_name] = criteria_scores
-
-        return result if result else None
-
-    except (json.JSONDecodeError, KeyError, FileNotFoundError):
-        return None
 
 
 def _load_round_scores(debate_rounds_path: str, round_num: int = 1) -> dict[str, dict[str, int]] | None:
@@ -97,10 +68,7 @@ def compute_krippendorff_alpha(
     scores_per_rater: dict[str, list[int]] = {}
 
     for path in debate_rounds_paths:
-        if Path(path).name == "debate_responses.json":
-            round_scores = _load_multi_role_scores(path)
-        else:
-            round_scores = _load_round_scores(path, round_num=1)
+        round_scores = _load_round_scores(path, round_num=1)
         if round_scores is None:
             continue
 

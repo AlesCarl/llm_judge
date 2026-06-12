@@ -47,38 +47,6 @@ def _parse_rounds(debate_rounds_path: str) -> list[dict] | None:
 
 
 
-def _parse_multi_role_responses(debate_responses_path: str) -> list[dict] | None:
-    """Load debate_responses.json (multi_role) as a single pseudo-round.
-
-    Only the final structured round exists → intra-agent shift = 0 by
-    definition (only one round of scores). Inter-agent divergence is
-    computed on this single round.
-    """
-    try:
-        with open(debate_responses_path) as f:
-            data = json.load(f)
-        
-        if isinstance(data, list):
-            return None  # skip, no role names available
-
-        assessments = {}
-        for debater_name, response in data.items():
-            if response is None:
-                continue
-            scores = response["scores"]
-            criteria_scores = {c: scores[c]["score"] for c in _CRITERIA if c != "overall_score"}
-            criteria_scores["overall_score"] = round(
-                sum(criteria_scores[c] for c in _CRITERIA if c != "overall_score") / 5, 2
-            )
-            assessments[debater_name] = criteria_scores
-
-        return [{"round": 1, "assessments": assessments}] if assessments else None
-
-    except (json.JSONDecodeError, KeyError, FileNotFoundError):
-        return None
-
-
-
 def compute_opinion_shift(debate_rounds_paths: list[str]) -> dict:
     """Compute Opinion Shift metrics across multiple runs.
 
@@ -99,10 +67,7 @@ def compute_opinion_shift(debate_rounds_paths: list[str]) -> dict:
     rounds_counts: list[int] = []
 
     for path in debate_rounds_paths:
-        if Path(path).name == "debate_responses.json":
-            rounds = _parse_multi_role_responses(path)
-        else:
-            rounds = _parse_rounds(path)
+        rounds = _parse_rounds(path)
         if not rounds or len(rounds) < 1:
             continue
 

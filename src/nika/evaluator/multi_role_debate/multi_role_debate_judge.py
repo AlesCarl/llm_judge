@@ -188,9 +188,16 @@ class MultiRoleDebateJudge(BaseJudge):
 
 
                 # 3** . Switch to structured output for the final round.
-                if is_final:
-                    debater.use_structured_output(DebaterResponse)
+                #if is_final:
+                #    debater.use_structured_output(DebaterResponse)
 
+                if is_final:
+                    debater.llm = load_model(
+                        llm_backend=self.judge_llm_backend,
+                        model=role.model or self.judge_model,
+                        temperature=role.scoring_temperature,
+                    )
+                    debater.use_structured_output(DebaterResponse)
 
                 # 4. Speak — wrapped so a single debater failure doesn't
                 try:
