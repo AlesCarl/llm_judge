@@ -148,11 +148,37 @@ def inject_failure(
         inject_problem.inject_fault(params=fault_params)
     else:
         inject_problem.inject_fault()
+
+    if not hasattr(inject_problem, "verify_fault"):
+        raise RuntimeError(f"Problem {problem_names} does not implement verify_fault")
+    if fault_params is not None:
+        verify_result = inject_problem.verify_fault(params=fault_params)
+    else:
+        verify_result = inject_problem.verify_fault()
+    verify_payload = _json_safe(verify_result)
+    if not verify_result.get("verified", False):
+        for failure_id, _problem_name in failure_rows:
+            store.update_failure_injection(
+                session.session_id,
+                failure_id,
+                {"status": "verify_failed", "verify_result": verify_payload},
+            )
+        log_event(
+            "failure_verify_failed",
+            f"Failure verification failed: session={session.session_id}, problems={problem_names}",
+            session_id=session.session_id,
+            problems=problem_names,
+            verify_result=verify_payload,
+        )
+        raise RuntimeError(
+            f"Failure injection verification failed for {problem_names}: {verify_result}"
+        )
+
     for failure_id, problem_name in failure_rows:
         store.update_failure_injection(
             session.session_id,
             failure_id,
-            {"status": "injected"},
+            {"status": "injected", "verify_result": verify_payload},
         )
         log_event(
             "failure_injected",
@@ -160,6 +186,13 @@ def inject_failure(
             session_id=session.session_id,
             problem=problem_name,
         )
+    log_event(
+        "failure_verified",
+        f"Failure verified: session={session.session_id}, problems={problem_names}",
+        session_id=session.session_id,
+        problems=problem_names,
+        verify_result=verify_payload,
+    )
 
     log_event(
         "failure_inject_complete",

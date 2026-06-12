@@ -5,9 +5,8 @@ from pydantic import BaseModel, Field
 
 from nika.generator.fault.injector_base import FaultInjectorBase
 from nika.net_env.net_env_pool import get_net_env_instance
-import docker
-
 from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel, build_verify_result
+from nika.service.kathara.docker_utils import get_machine_container
 from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
@@ -49,12 +48,13 @@ class HostCrashBase:
         if params is None:
             params = HostCrashParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        client = docker.from_env()
-        containers = client.containers.list(all=True, filters={"name": host})
         container_status = "not_found"
-        if containers:
-            containers[0].reload()
-            container_status = containers[0].status
+        try:
+            container = get_machine_container(lab_name=self.net_env.lab.name, host_name=host)
+            container.reload()
+            container_status = container.status
+        except ValueError:
+            pass
         verified = container_status == "paused"
         return build_verify_result(
             root_cause_name=self.root_cause_name,

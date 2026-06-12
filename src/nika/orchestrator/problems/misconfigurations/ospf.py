@@ -46,24 +46,21 @@ class OSPFAreaMisconfigBase:
         if params is None:
             params = OSPFAreaMisconfigParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        correct_area = self.kathara_api.exec_cmd(host, "vtysh -c 'show running-config'")
+        running_cfg = self.kathara_api.exec_cmd(host, "vtysh -c 'show running-config'")
         pattern = re.compile(r"^\s*network\s+\S+\s+area\s+(\S+)", re.MULTILINE)
-        m = pattern.search(correct_area)
+        m = pattern.search(running_cfg)
         if not m:
             self.logger.error(f"Could not find OSPF area on {host}")
         correct_area = m.group(1)
         wrong_area = "66" if correct_area != "66" else "99"
         self.kathara_api.exec_cmd(
             host,
-            f"vtysh -c 'show running-config' | sed -E 's/(area )({correct_area})$/\\1{wrong_area}/' > /etc/frr/frr.conf && systemctl restart frr",
+            f"sed -i.bak -E 's/(area ){correct_area}$/\\1{wrong_area}/g' /etc/frr/frr.conf && service frr restart 2>/dev/null || true",
         )
         self.logger.info(f"Injected OSPF area misconfiguration on {host} from area {correct_area} to {wrong_area}.")
 
     def verify_fault(self, params: OSPFAreaMisconfigParams | None = None) -> dict:
-        """Verify file and in-memory OSPF areas differ (misconfiguration applied).
-
-        KNOWN ISSUE: systemctl restart is a no-op in Kathara; in-memory config won't change.
-        """
+        """Verify the OSPF area in frr.conf and in the running daemon was changed."""
         if params is None:
             params = OSPFAreaMisconfigParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -71,13 +68,20 @@ class OSPFAreaMisconfigBase:
             host,
             "grep -E '^[[:space:]]*network .* area ' /etc/frr/frr.conf 2>/dev/null | awk '{print $NF}' | sort -u",
         ).strip()
-        mem_areas_raw = self.kathara_api.exec_cmd(
+        orig_areas_raw = self.kathara_api.exec_cmd(
+            host,
+            "grep -E '^[[:space:]]*network .* area ' /etc/frr/frr.conf.bak 2>/dev/null | awk '{print $NF}' | sort -u",
+        ).strip()
+        running_areas_raw = self.kathara_api.exec_cmd(
             host,
             "vtysh -c 'show running-config' 2>/dev/null | grep -E '^[[:space:]]*network .* area ' | awk '{print $NF}' | sort -u",
         ).strip()
         file_areas = set(file_areas_raw.splitlines()) if file_areas_raw else set()
-        mem_areas = set(mem_areas_raw.splitlines()) if mem_areas_raw else set()
-        verified = bool(file_areas) and file_areas != mem_areas
+        orig_areas = set(orig_areas_raw.splitlines()) if orig_areas_raw else set()
+        running_areas = set(running_areas_raw.splitlines()) if running_areas_raw else set()
+        file_changed = bool(file_areas) and bool(orig_areas) and file_areas != orig_areas
+        daemon_changed = bool(running_areas) and running_areas != orig_areas
+        verified = file_changed and daemon_changed
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
@@ -85,7 +89,8 @@ class OSPFAreaMisconfigBase:
             details={
                 "host": host,
                 "file_areas": list(file_areas),
-                "mem_areas": list(mem_areas),
+                "orig_areas": list(orig_areas),
+                "running_areas": list(running_areas),
             },
         )
 
@@ -150,18 +155,15 @@ class OSPFNeighborMissingBase:
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
         cmd = (
             "sed -i.bak -E "
-            "'s|^([[:space:]]*)network[[:space:]]+[^[:space:]]+[[:space:]]+area|\\1# &|' "
+            "'s|^([[:space:]]*)network([[:space:]])|\\1# network\\2|' "
             "/etc/frr/frr.conf"
         )
         self.kathara_api.exec_cmd(host, cmd)
-        self.kathara_api.exec_cmd(host, "systemctl restart frr")
+        self.kathara_api.exec_cmd(host, "service frr restart 2>/dev/null || true")
         self.logger.info(f"Injected OSPF neighbor missing on {host}.")
 
     def verify_fault(self, params: OSPFNeighborMissingParams | None = None) -> dict:
-        """Verify the frr.conf network lines are commented out.
-
-        KNOWN ISSUE: systemctl restart is a no-op in Kathara; in-memory config won't change.
-        """
+        """Verify network lines are commented in frr.conf and removed from the running daemon."""
         if params is None:
             params = OSPFNeighborMissingParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -173,12 +175,24 @@ class OSPFNeighborMissingBase:
             commented_count = int(commented_count_raw)
         except ValueError:
             commented_count = 0
-        verified = commented_count > 0
+        running_network_count_raw = self.kathara_api.exec_cmd(
+            host,
+            "vtysh -c 'show running-config' 2>/dev/null | grep -c '^[[:space:]]*network' || echo 0",
+        ).strip()
+        try:
+            running_network_count = int(running_network_count_raw)
+        except ValueError:
+            running_network_count = 0
+        verified = commented_count > 0 and running_network_count == 0
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
             verified=verified,
-            details={"host": host, "commented_network_count": commented_count},
+            details={
+                "host": host,
+                "commented_network_count": commented_count,
+                "running_network_count": running_network_count,
+            },
         )
 
 

@@ -3,8 +3,6 @@ import random
 import tarfile
 from typing import Optional
 
-import docker
-
 from nika.config import BASE_DIR
 from nika.generator.fault.injector_host import FaultInjectorHost
 from nika.generator.fault.injector_tc import FaultInjectorTC
@@ -14,6 +12,7 @@ from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.service.kathara.docker_utils import get_machine_container
 from nika.utils.logger import system_logger
 from pydantic import BaseModel, Field
 
@@ -52,11 +51,7 @@ class SenderResourceContentionBase:
         system_logger.info(f"Injected TCP slow sender issue on host {host}")
 
     def verify_fault(self, params: SenderResourceContentionParams | None = None) -> dict:
-        """Verify stress-ng is running on the sender host.
-
-        KNOWN ISSUE: inject_stress_all uses & without nohup/setsid and has a -vm typo;
-        the process may die immediately. This verify is expected to fail.
-        """
+        """Verify stress-ng is running on the sender host."""
         if params is None:
             params = SenderResourceContentionParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -127,8 +122,7 @@ class SenderApplicationDelayBase:
             params = SenderApplicationDelayParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
         self.kathara_api.exec_cmd(host_name=host, command="cp web_server.py web_server.py.bak")
-        client = docker.from_env()
-        container = client.containers.list(filters={"name": f"{host}"})[0]
+        container = get_machine_container(lab_name=self.net_env.lab.name, host_name=host)
         src_path = f"{BASE_DIR}/src/nika/net_env/utils/web/slow_sender_server.py"
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w") as tar:
@@ -217,11 +211,7 @@ class ReceiverResourceContentionBase:
         system_logger.info(f"Injected TCP receiver resource contention on host {host}")
 
     def verify_fault(self, params: ReceiverResourceContentionParams | None = None) -> dict:
-        """Verify stress-ng is running on the receiver host.
-
-        KNOWN ISSUE: inject_stress_all uses & without nohup/setsid and has a -vm typo;
-        the process may die immediately. This verify is expected to fail.
-        """
+        """Verify stress-ng is running on the receiver host."""
         if params is None:
             params = ReceiverResourceContentionParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]

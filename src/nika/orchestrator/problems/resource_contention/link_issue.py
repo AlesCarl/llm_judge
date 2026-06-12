@@ -139,7 +139,7 @@ class LinkBandwidthThrottlingBase:
             burst=params.burst,
             limit=params.limit,
         )
-        generator = ODFLowGenerator(lab_name=self.scenario_name)
+        generator = ODFLowGenerator(lab_name=self.net_env.lab.name)
         od_dict = {}
         mbps = 20
         for h in self.net_env.hosts:
@@ -241,7 +241,7 @@ class IncastTrafficNetworkLimitationBase:
             parent="1:1",
         )
         system_logger.info(f"Injected network limitation on host {host}")
-        generator = ODFLowGenerator(lab_name=self.scenario_name)
+        generator = ODFLowGenerator(lab_name=self.net_env.lab.name)
         od_dict = {}
         mbps = 20
         for h in self.net_env.hosts:

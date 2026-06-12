@@ -53,11 +53,7 @@ class WebDoSBase:
         self.injector.inject_ab_attack(attacker_host=attacker, website=target_ip)
 
     def verify_fault(self, params: WebDoSParams | None = None) -> dict:
-        """Verify the ab attack process is running on the attacker device.
-
-        KNOWN ISSUE: inject_ab_attack uses & which may not survive the exec_cmd session.
-        This verify is expected to fail.
-        """
+        """Verify the ab attack process is running on the attacker device."""
         if params is None:
             params = WebDoSParams()
         web_server = params.host_name if params.host_name is not None else self.faulty_devices[0]

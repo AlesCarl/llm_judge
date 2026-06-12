@@ -100,7 +100,10 @@ class FaultInjectorService:
         asyncio.run(self._renew_dhcp_on_all_hosts())
 
     def inject_ab_attack(self, attacker_host: str, website: str):
-        cmd = f"while true ; do ab -n 200000000 -c 1000 -k http://{website}/ > /dev/null 2>&1; done &"
+        cmd = (
+            f"nohup bash -c 'while true; do ab -n 200000000 -c 1000 -k http://{website}/; done'"
+            f" </dev/null >/dev/null 2>&1 &"
+        )
         self.kathara_api.exec_cmd(attacker_host, cmd)
         self.logger.info(f"Started AB attack from {attacker_host} to {website}")
 

@@ -125,10 +125,7 @@ class LoadBalancerOverloadBase:
         self.injector.inject_stress_all(host_name=host, duration=params.duration)
 
     def verify_fault(self, params: LoadBalancerOverloadParams | None = None) -> dict:
-        """Verify stress-ng is running on the load balancer.
-
-        KNOWN ISSUE: inject_stress_all uses & without nohup/setsid; process may die immediately.
-        """
+        """Verify stress-ng is running on the load balancer."""
         if params is None:
             params = LoadBalancerOverloadParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]

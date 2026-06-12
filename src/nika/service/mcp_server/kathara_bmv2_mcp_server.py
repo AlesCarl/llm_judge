@@ -1,13 +1,11 @@
-import os
-
 from mcp.server.fastmcp import FastMCP
 
 from nika.service.kathara import KatharaBMv2API
+from nika.service.mcp_server.mcp_session_context import get_lab_name
 from nika.utils.errors import safe_tool
 
 # Initialize FastMCP server
 mcp = FastMCP("kathara_bmv2_mcp_server")
-LAB_NAME = os.getenv("LAB_NAME")
 
 
 @safe_tool
@@ -21,7 +19,7 @@ def bmv2_get_log(switch_name: str, rows: int) -> str:
     Returns:
         str: The logs from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_get_log(switch_name, rows)
 
 
@@ -36,7 +34,7 @@ def bmv2_get_counter_arrays(switch_name: str) -> str:
     Returns:
         str: The counter names from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_get_counter_arrays(switch_name)
 
 
@@ -50,7 +48,7 @@ def bmv2_read_p4_program(switch_name: str) -> str:
     Returns:
         str: The P4 program from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.read_p4_program(switch_name)
 
 
@@ -67,7 +65,7 @@ def bmv2_counter_read(switch_name: str, counter_name: str, index: int = 0) -> st
     Returns:
         str: The counter value from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_counter_read(switch_name, counter_name, index)
 
 
@@ -82,7 +80,7 @@ def bmv2_show_tables(switch_name: str) -> str:
     Returns:
         str: The table names from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_show_tables(switch_name)
 
 
@@ -98,7 +96,7 @@ def bmv2_table_dump(switch_name: str, table_name: str) -> str:
     Returns:
         str: The table entries from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_table_dump(switch_name, table_name)
 
 
@@ -111,7 +109,7 @@ def bmv2_get_register_arrays(switch_name: str) -> str:
     Returns:
         str: The register array names from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_get_register_arrays(switch_name)
 
 
@@ -130,7 +128,7 @@ def bmv2_register_read(
     Returns:
         str: The register value from the bmv2 switch.
     """
-    kathara_api = KatharaBMv2API(lab_name=LAB_NAME)
+    kathara_api = KatharaBMv2API(lab_name=get_lab_name())
     return kathara_api.bmv2_register_read(switch_name, register_name, index)
 
 

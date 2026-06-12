@@ -25,8 +25,6 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.messages import BaseMessage, ToolMessage
 from langchain_core.outputs.generation import Generation
 
-from nika.utils.session import Session
-
 MESSAGES_FILENAME = "messages.jsonl"
 
 
@@ -65,10 +63,9 @@ class AgentCallbackLogger(BaseCallbackHandler):
     ``_log(event_type, payload)`` interface for use in agent code.
     """
 
-    def __init__(self, agent: str) -> None:
+    def __init__(self, agent: str, session_dir: str) -> None:
         super().__init__()
-        session = Session().load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
-        self._logger = MessageLogger(agent=agent, session_dir=session.session_dir)
+        self._logger = MessageLogger(agent=agent, session_dir=session_dir)
 
     # Compatibility shim used by MockAgent and tests.
     def _log(self, event_type: str, payload: dict[str, Any]) -> None:

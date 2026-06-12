@@ -1,38 +1,26 @@
-"""Mock LLM agent that simulates BasicReActAgent behaviour without a real LLM or MCP servers.
+"""Mock LLM agent that simulates BasicReActAgent behaviour without a real LLM.
 
 The agent mirrors the two-phase architecture of BasicReActAgent:
-  1. diagnosis phase  – simulates several tool calls and emits a diagnosis report
-  2. submission phase – calls list_avail_problems + submit, writes submission.json
+  1. diagnosis phase  – calls Kathara MCP tools and emits a deterministic report
+  2. submission phase – calls list_avail_problems + submit via task MCP server
 
 It can be selected via ``nika agent run -a mock`` and is intended for integration
 tests and CI pipelines that must exercise the full session pipeline without
-standing up Kathará labs or calling a real LLM endpoint.
+standing up a real LLM endpoint.
 """
 
-import asyncio
 import json
-import os
 from typing import Any
 
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+from agent.utils.mcp_servers import MCPServerConfig
 from nika.utils.session import Session
 
-MOCK_DIAGNOSIS_TOOLS: list[tuple[str, str, str]] = [
-    (
-        "get_reachability",
-        '{"device": "pc1"}',
-        "UNREACHABLE: pc1 → pc2 — 0/3 packets received (100 % loss)",
-    ),
-    (
-        "ping_pair",
-        '{"src": "pc1", "dst": "pc2"}',
-        "PING pc1 → pc2: rtt min/avg/max = — ms  (100 % packet loss)",
-    ),
-    (
-        "frr_show_ip_route",
-        '{"device": "r1"}',
-        "B>* 10.0.0.0/24 [20/0] via 192.168.1.1, eth0, 00:01:23\n"
-        "B>* 10.0.1.0/24 unreachable",
-    ),
+MOCK_DIAGNOSIS_TOOL_CALLS: list[tuple[str, dict[str, Any]]] = [
+    ("get_reachability", {}),
+    ("ping_pair", {"host_a": "pc1", "host_b": "pc2"}),
+    ("frr_show_ip_route", {"router_name": "r1"}),
 ]
 
 MOCK_DIAGNOSIS_REPORT = (
@@ -42,22 +30,44 @@ MOCK_DIAGNOSIS_REPORT = (
 )
 
 
+def _tool_text_list(result: object) -> list[str]:
+    """Normalize MCP tool output into plain strings."""
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            return [result]
+    if not isinstance(result, list):
+        return [str(result)]
+
+    texts: list[str] = []
+    for item in result:
+        if isinstance(item, dict) and "text" in item:
+            texts.append(str(item["text"]))
+        else:
+            texts.append(str(item))
+    return texts
+
+
 class MockAgent:
     """Deterministic mock agent that mirrors the BasicReActAgent interface."""
 
     def __init__(
         self,
+        session_id: str,
         llm_backend: str = "mock",
         model: str = "mock-v1",
         max_steps: int = 20,
     ) -> None:
+        self.session_id = session_id
         self.llm_backend = llm_backend
         self.model = model
         self.max_steps = max_steps
+        self.session = Session()
+        self.session.load_running_session(session_id=session_id)
 
     def load_session(self) -> None:
-        self.session = Session()
-        self.session.load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
+        self.session.load_running_session(session_id=self.session_id)
 
     async def run(self, task_description: str) -> dict[str, Any]:
         self.load_session()
@@ -79,20 +89,35 @@ class MockAgent:
             },
         )
 
-        for tool_name, tool_input, tool_output in MOCK_DIAGNOSIS_TOOLS:
-            logger._log("tool_start", {"tool": {"name": tool_name}, "input": tool_input})
-            await asyncio.sleep(0)
-            logger._log("tool_end", {"output": tool_output, "output_type": "str"})
+        mcp_config = MCPServerConfig(session_id=self.session_id)
+        diagnosis_config = {
+            k: v
+            for k, v in mcp_config.load_config(if_submit=False).items()
+            if k in ("kathara_base_mcp_server", "kathara_frr_mcp_server")
+        }
+
+        client = MultiServerMCPClient(connections=diagnosis_config)
+        tools = {tool.name: tool for tool in await client.get_tools()}
+
+        for tool_name, tool_input in MOCK_DIAGNOSIS_TOOL_CALLS:
+            logger._log(
+                "tool_start",
+                {"tool": {"name": tool_name}, "input": json.dumps(tool_input)},
+            )
+            tool_output = await tools[tool_name].ainvoke(tool_input)
+            logger._log(
+                "tool_end",
+                {
+                    "output": str(tool_output),
+                    "output_type": type(tool_output).__name__,
+                },
+            )
 
         logger._log("llm_end", {"text": MOCK_DIAGNOSIS_REPORT})
         return MOCK_DIAGNOSIS_REPORT
 
     async def _run_submission(self, diagnosis_report: str) -> None:
-        from nika.orchestrator.problems.prob_pool import list_avail_problem_names  # noqa: PLC0415
-
         logger = self._make_logger("submission_agent")
-        avail_problems = list_avail_problem_names()
-        mock_root_cause = avail_problems[0] if avail_problems else "link_down"
 
         logger._log(
             "llm_start",
@@ -108,11 +133,22 @@ class MockAgent:
             },
         )
 
+        config = MCPServerConfig(session_id=self.session_id).load_config(if_submit=True)
+
+        client = MultiServerMCPClient(connections=config)
+        tools = {tool.name: tool for tool in await client.get_tools()}
+
         logger._log("tool_start", {"tool": {"name": "list_avail_problems"}, "input": "{}"})
-        await asyncio.sleep(0)
+        avail_raw = await tools["list_avail_problems"].ainvoke({})
+        avail = _tool_text_list(avail_raw)
+        session_root_cause = getattr(self.session, "root_cause_name", None)
+        if session_root_cause in avail:
+            mock_root_cause = session_root_cause
+        else:
+            mock_root_cause = avail[0] if avail else "link_down"
         logger._log(
             "tool_end",
-            {"output": json.dumps(avail_problems[:5]) + " ...", "output_type": "list"},
+            {"output": json.dumps(avail[:5]) + " ...", "output_type": "list"},
         )
 
         submission: dict[str, Any] = {
@@ -124,24 +160,19 @@ class MockAgent:
             "tool_start",
             {"tool": {"name": "submit"}, "input": json.dumps(submission)},
         )
-        await asyncio.sleep(0)
-        self._write_submission(submission)
-        logger._log("tool_end", {"output": "Submission success.", "output_type": "str"})
+        submit_result = await tools["submit"].ainvoke(submission)
+        logger._log(
+            "tool_end",
+            {"output": str(submit_result), "output_type": type(submit_result).__name__},
+        )
 
         logger._log(
             "llm_end",
             {"text": f"Submitted: root cause = {mock_root_cause}, faulty device = pc1"},
         )
 
-    def _write_submission(self, submission: dict[str, Any]) -> None:
-        """Write submission.json into the session directory."""
-        session_dir = self.session.session_dir
-        os.makedirs(session_dir, exist_ok=True)
-        with open(os.path.join(session_dir, "submission.json"), "w", encoding="utf-8") as fh:
-            json.dump(submission, fh, indent=2)
-
     def _make_logger(self, agent_name: str):
         """Return an AgentCallbackLogger for *agent_name*."""
         from agent.utils.loggers import AgentCallbackLogger  # noqa: PLC0415
 
-        return AgentCallbackLogger(agent=agent_name)
+        return AgentCallbackLogger(agent=agent_name, session_dir=self.session.session_dir)

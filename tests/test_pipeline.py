@@ -166,6 +166,13 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertIn("list_avail_problems", submission_tools)
         self.assertIn("submit", submission_tools)
 
+        submission_path = self.session_dir / "submission.json"
+        self.assertIn(
+            self.session_id,
+            str(submission_path),
+            "submission.json must be written via MCP to the session-scoped path",
+        )
+
         submission = self._load_json("submission.json")
         for field in ("is_anomaly", "faulty_devices", "root_cause_name"):
             self.assertIn(field, submission)

@@ -1,13 +1,11 @@
-import os
-
 from mcp.server.fastmcp import FastMCP
 
 from nika.service.kathara import KatharaTelemetryAPI
+from nika.service.mcp_server.mcp_session_context import get_lab_name
 from nika.utils.errors import safe_tool
 
 # Initialize FastMCP server
 mcp = FastMCP("kathara_telemetry_mcp_server")
-LAB_NAME = os.getenv("LAB_NAME")
 
 
 @safe_tool
@@ -18,7 +16,7 @@ def influx_list_buckets() -> list[str]:
     Returns:
         list[str]: A list of InfluxDB bucket names, default in json format.
     """
-    kathara_api = KatharaTelemetryAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaTelemetryAPI(lab_name=get_lab_name())
     return kathara_api.influx_list_buckets()
 
 
@@ -30,7 +28,7 @@ def influx_get_measurements() -> list[str]:
     Returns:
         list[str]: A list of InfluxDB measurement names.
     """
-    kathara_api = KatharaTelemetryAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaTelemetryAPI(lab_name=get_lab_name())
     return kathara_api.influx_get_measurements()
 
 
@@ -45,7 +43,7 @@ def influx_count_measurements(measurement: str) -> list[str]:
     Returns:
         list[str]: The count of records in the measurement, default in json format.
     """
-    kathara_api = KatharaTelemetryAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaTelemetryAPI(lab_name=get_lab_name())
     return kathara_api.influx_count_measurements(measurement)
 
 
@@ -64,7 +62,7 @@ def influx_query_measurement(measurement: str, limit: int = 10, offset: int = 0)
     Returns:
         list[str]: The queried records from the measurement, default in json format.
     """
-    kathara_api = KatharaTelemetryAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaTelemetryAPI(lab_name=get_lab_name())
     return kathara_api.influx_query_measurement(measurement, limit=limit, offset=offset)
 
 

@@ -51,7 +51,7 @@ def failure_inject(
     overrides = _parse_set_options(sets)
     try:
         inject_failure(problems, session_id=session_id, param_overrides=overrides)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
 

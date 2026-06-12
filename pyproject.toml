@@ -15,7 +15,7 @@ dependencies = [
     "pydantic",
     "openai",
     "instructor",
-    "kathara>=3.7.9",
+    "kathara",
     "langfuse",
     "python-dotenv",
     "langchain-deepseek",

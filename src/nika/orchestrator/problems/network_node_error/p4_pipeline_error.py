@@ -1,5 +1,6 @@
 import logging
 import random
+import re
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,132 @@ from nika.service.kathara import KatharaAPIALL
 from nika.utils.logger import system_logger
 
 logger = system_logger
+
+_MISCONFIG_PORT = "99"
+_MISCONFIG_MAC = "ff:ff:ff:ff:ff:ff"
+
+
+def _cli_run(kathara_api: KatharaAPIALL, host: str, command: str) -> str:
+    return kathara_api.exec_cmd(host, f"simple_switch_CLI <<< '{command}' 2>/dev/null")
+
+
+def _cli_show_match_tables(kathara_api: KatharaAPIALL, host: str) -> list[str]:
+    output = _cli_run(kathara_api, host, "show_tables")
+    tables: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("RuntimeCmd:"):
+            line = line[len("RuntimeCmd:") :].strip()
+        if not line or line in {"Done", "Obtaining JSON from switch..."}:
+            continue
+        if "mk=" not in line or "mk=]" in line or "[" not in line:
+            continue
+        name = line.split()[0]
+        tables.append(name)
+    return tables
+
+
+def _cli_table_has_match_entries(kathara_api: KatharaAPIALL, host: str, table_name: str) -> bool:
+    dump = _cli_run(kathara_api, host, f"table_dump {table_name}")
+    return "Dumping entry" in dump
+
+
+def _table_selection_score(table_name: str, action_params: list[str]) -> int:
+    lower = table_name.lower()
+    score = 0
+    if any(token in lower for token in ("forward", "lpm", "mpls", "dmac", "route", "fec")):
+        score += 10
+    if any(token in lower for token in ("check_", "border", "set_")):
+        score -= 20
+    if action_params:
+        score += 5
+    if any(len(param.replace(":", "")) >= 6 for param in action_params):
+        score += 3
+    if lower.startswith("myegress."):
+        score -= 5
+    return score
+
+
+def _list_populated_match_tables(kathara_api: KatharaAPIALL, host: str) -> list[tuple[str, list[str]]]:
+    populated: list[tuple[str, list[str]]] = []
+    for table_name in _cli_show_match_tables(kathara_api, host):
+        if not _cli_table_has_match_entries(kathara_api, host, table_name):
+            continue
+        dump = _cli_run(kathara_api, host, f"table_dump_entry {table_name} 0")
+        try:
+            _, action_params = _parse_action_from_dump_entry(dump)
+        except RuntimeError:
+            continue
+        populated.append((table_name, action_params))
+    return populated
+
+
+def _find_table_with_entries(kathara_api: KatharaAPIALL, host: str, *, require_action_params: bool = False) -> str:
+    populated = _list_populated_match_tables(kathara_api, host)
+    if require_action_params:
+        populated = [(name, params) for name, params in populated if params]
+    if not populated:
+        raise RuntimeError(f"No populated match table found on {host}")
+    populated.sort(key=lambda item: _table_selection_score(item[0], item[1]), reverse=True)
+    return populated[0][0]
+
+
+def _parse_action_from_dump_entry(dump_output: str) -> tuple[str, list[str]]:
+    for line in dump_output.splitlines():
+        if "Action entry:" not in line:
+            continue
+        after = line.split("Action entry:", 1)[1].strip()
+        match = re.match(r"^(.+?)\s+-\s*(.*)$", after)
+        if not match:
+            raise RuntimeError(f"Could not parse action entry line: {line}")
+        action_name = match.group(1).rsplit(".", 1)[-1].strip()
+        params = [param.strip() for param in match.group(2).split(",") if param.strip()]
+        return action_name, params
+    raise RuntimeError("No action entry found in table dump")
+
+
+def _corrupt_action_param(param: str) -> str:
+    cleaned = param.replace(":", "")
+    if len(cleaned) >= 6:
+        return _MISCONFIG_MAC
+    return _MISCONFIG_PORT
+
+
+def _misconfigure_first_table_entry(kathara_api: KatharaAPIALL, host: str) -> dict:
+    table_name = _find_table_with_entries(kathara_api, host, require_action_params=True)
+    dump_before = _cli_run(kathara_api, host, f"table_dump_entry {table_name} 0")
+    action_name, params = _parse_action_from_dump_entry(dump_before)
+    corrupted_params = [_corrupt_action_param(param) for param in params] if params else [_MISCONFIG_PORT]
+    modify_cmd = f"table_modify {table_name} {action_name} 0 " + " ".join(corrupted_params)
+    _cli_run(kathara_api, host, modify_cmd)
+    dump_after = _cli_run(kathara_api, host, f"table_dump_entry {table_name} 0")
+    _, expected_params = _parse_action_from_dump_entry(dump_after)
+    return {
+        "table_name": table_name,
+        "entry_handle": 0,
+        "action_name": action_name,
+        "expected_params": expected_params,
+    }
+
+
+def _entry_matches_misconfig(dump_output: str, expected: dict) -> bool:
+    action_name, params = _parse_action_from_dump_entry(dump_output)
+    return action_name == expected["action_name"] and params == expected["expected_params"]
+
+
+def _detect_misconfigured_entry(kathara_api: KatharaAPIALL, host: str) -> tuple[bool, str | None]:
+    for table_name, _ in _list_populated_match_tables(kathara_api, host):
+        dump = _cli_run(kathara_api, host, f"table_dump_entry {table_name} 0")
+        if "ffffffffffff" in dump.lower():
+            return True, table_name
+        try:
+            _, params = _parse_action_from_dump_entry(dump)
+        except RuntimeError:
+            continue
+        if any(param.lower() in {"63", "99"} for param in params):
+            return True, table_name
+    return False, None
+
 
 # ==================================================================
 # Problem: P4 header definition error
@@ -51,7 +178,10 @@ class P4HeaderDefinitionErrorBase:
             host,
             f"cp {p4_name}.p4 {p4_name}.p4.bak && "
             f"rm {p4_name}.json && "
-            f"sed -Ei 's/bit<16>[[:space:]]+identification;/bit<6>   identification;/g' {p4_name}.p4 ",
+            f"sed -Ei "
+            f"-e 's/(bit<16>[[:space:]]+etherType;)/\\1\\n    \\1/g' "
+            f"-e 's/(bit<16>[[:space:]]+ether_type;)/\\1\\n    \\1/g' "
+            f"{p4_name}.p4 ",
         )
         self.kathara_api.exec_cmd(host, "pkill -f simple_switch")
         self.kathara_api.exec_cmd(host, f"./hostlab/{host}.startup")
@@ -221,28 +351,30 @@ class P4TableEntryMissingBase:
         self.kathara_api = KatharaAPIALL(lab_name=self.net_env.lab.name)
         self.injector = FaultInjectorBase(lab_name=self.net_env.lab.name)
         self.faulty_devices = [random.choice(self.net_env.bmv2_switches)]
+        self._cleared_table: str | None = None
 
     def inject_fault(self, params: P4TableEntryMissingParams | None = None):
         if params is None:
             params = P4TableEntryMissingParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        self.kathara_api.exec_cmd(host, "simple_switch_CLI <<< 'table_clear MyIngress.ipv4_lpm'")
-        logger.info(f"Injected fault: Deleted table entries on {host}")
+        table_name = _find_table_with_entries(self.kathara_api, host)
+        _cli_run(self.kathara_api, host, f"table_clear {table_name}")
+        self._cleared_table = table_name
+        logger.info(f"Injected fault: Deleted table entries on {host} ({table_name})")
 
     def verify_fault(self, params: P4TableEntryMissingParams | None = None) -> dict:
-        """Verify the IPv4 LPM table has no entries."""
+        """Verify the forwarding table has no match entries."""
         if params is None:
             params = P4TableEntryMissingParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        table_dump = self.kathara_api.exec_cmd(
-            host, "simple_switch_CLI <<< 'table_dump MyIngress.ipv4_lpm' 2>/dev/null"
-        ).strip()
+        table_name = self._cleared_table or _find_table_with_entries(self.kathara_api, host)
+        table_dump = _cli_run(self.kathara_api, host, f"table_dump {table_name}").strip()
         verified = "0 entries" in table_dump or table_dump == "" or "Dumping entry" not in table_dump
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
             verified=verified,
-            details={"host": host, "table_dump": table_dump},
+            details={"host": host, "table_name": table_name, "table_dump": table_dump},
         )
 
 
@@ -297,31 +429,39 @@ class P4TableEntryMisconfigBase:
         self.kathara_api = KatharaAPIALL(lab_name=self.net_env.lab.name)
         self.injector = FaultInjectorBase(lab_name=self.net_env.lab.name)
         self.faulty_devices = [self.net_env.bmv2_switches[0]]
+        self._misconfig_details: dict | None = None
 
     def inject_fault(self, params: P4TableEntryMisconfigParams | None = None):
         if params is None:
             params = P4TableEntryMisconfigParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        self.kathara_api.exec_cmd(host, "simple_switch_CLI <<< 'table_clear MyIngress.ipv4_lpm'")
-        self.kathara_api.exec_cmd(host, "sed -Ei.bak 's/00:00:/66:66:/g' commands.txt")
-        self.kathara_api.exec_cmd(host, "simple_switch_CLI <<< $(cat commands.txt)")
-        logger.info(f"Injected fault: Modified table entries on {host}")
+        self._misconfig_details = _misconfigure_first_table_entry(self.kathara_api, host)
+        logger.info(
+            f"Injected fault: Misconfigured table entry on {host} "
+            f"({self._misconfig_details['table_name']} handle {self._misconfig_details['entry_handle']})"
+        )
 
     def verify_fault(self, params: P4TableEntryMisconfigParams | None = None) -> dict:
-        """Verify the IPv4 LPM table entries have modified 66:66: MACs."""
+        """Verify a table entry action was modified via simple_switch_CLI."""
         if params is None:
             params = P4TableEntryMisconfigParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        check_output = self.kathara_api.exec_cmd(
-            host,
-            "simple_switch_CLI <<< 'table_dump MyIngress.ipv4_lpm' 2>/dev/null | grep '66:66' && echo found || echo absent",
-        ).strip()
-        verified = "found" in check_output
+        if self._misconfig_details:
+            table_name = self._misconfig_details["table_name"]
+            handle = self._misconfig_details["entry_handle"]
+            dump = _cli_run(self.kathara_api, host, f"table_dump_entry {table_name} {handle}")
+            verified = _entry_matches_misconfig(dump, self._misconfig_details)
+        else:
+            verified, table_name = _detect_misconfigured_entry(self.kathara_api, host)
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
             verified=verified,
-            details={"host": host, "has_modified_mac": verified},
+            details={
+                "host": host,
+                "table_name": table_name or (self._misconfig_details or {}).get("table_name"),
+                "misconfig_details": self._misconfig_details,
+            },
         )
 
 

@@ -57,10 +57,7 @@ class DHCPSpoofedGatewayBase:
         )
 
     def verify_fault(self, params: DHCPSpoofedGatewayParams | None = None) -> dict:
-        """Verify dhcpd.conf has spoofed gateway ending in .254.
-
-        KNOWN ISSUE: _renew_dhcp_on_all_hosts may overwrite the fault on clients.
-        """
+        """Verify dhcpd.conf has spoofed gateway ending in .254."""
         if params is None:
             params = DHCPSpoofedGatewayParams()
         dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -148,10 +145,7 @@ class DHCPSpoofedDNSBase:
         self.injector.inject_wrong_dns(dhcp_server=dhcp_server, subnet=subnet, wrong_dns=params.wrong_dns)
 
     def verify_fault(self, params: DHCPSpoofedDNSParams | None = None) -> dict:
-        """Verify dhcpd.conf has spoofed DNS server 8.8.8.8.
-
-        KNOWN ISSUE: _renew_dhcp_on_all_hosts may overwrite the fault on clients.
-        """
+        """Verify dhcpd.conf has spoofed DNS server 8.8.8.8."""
         if params is None:
             params = DHCPSpoofedDNSParams()
         dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -223,38 +217,56 @@ class DHCPSpoofedSubnetBase:
         self.injector = FaultInjectorService(lab_name=self.net_env.lab.name)
         self.faulty_devices = [random.choice(self.net_env.servers["dhcp"])]
         self.faulty_devices.append(random.choice(self.net_env.hosts))
+        # Pre-compute target subnet at init time while the host still has its DHCP lease.
+        self.target_subnet = str(
+            ipaddress.ip_network(
+                self.kathara_api.get_host_ip(self.faulty_devices[1], with_prefix=True), strict=False
+            ).network_address
+        )
 
     def inject_fault(self, params: DHCPSpoofedSubnetParams | None = None):
         if params is None:
             params = DHCPSpoofedSubnetParams()
         dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        client_host = params.host_name_2 if params.host_name_2 is not None else self.faulty_devices[1]
-        subnet = str(
-            ipaddress.ip_network(
-                self.kathara_api.get_host_ip(client_host, with_prefix=True), strict=False
-            ).network_address
-        )
+        if params.host_name_2 is not None:
+            subnet = str(
+                ipaddress.ip_network(
+                    self.kathara_api.get_host_ip(params.host_name_2, with_prefix=True), strict=False
+                ).network_address
+            )
+        else:
+            subnet = self.target_subnet
         self.injector.inject_delete_subnet(dhcp_server=dhcp_server, subnet=subnet)
 
     def verify_fault(self, params: DHCPSpoofedSubnetParams | None = None) -> dict:
-        """Verify dhcpd.conf subnet count is reduced (subnet deleted)."""
+        """Verify the target subnet has been removed from dhcpd.conf."""
         if params is None:
             params = DHCPSpoofedSubnetParams()
         dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        subnet = self.target_subnet
+        sub_escaped = subnet.replace(".", "\\.")
+        match_output = self.kathara_api.exec_cmd(
+            dhcp_server,
+            f"grep 'subnet {sub_escaped} netmask' /etc/dhcp/dhcpd.conf | wc -l",
+        ).strip()
         count_output = self.kathara_api.exec_cmd(
             dhcp_server,
             "grep 'subnet.*netmask' /etc/dhcp/dhcpd.conf | wc -l",
         ).strip()
         try:
+            match_count = int(match_output)
+        except ValueError:
+            match_count = -1
+        try:
             subnet_count = int(count_output)
         except ValueError:
             subnet_count = -1
-        verified = subnet_count == 0
+        verified = match_count == 0
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
             verified=verified,
-            details={"dhcp_server": dhcp_server, "subnet_count": subnet_count},
+            details={"dhcp_server": dhcp_server, "subnet_count": subnet_count, "deleted_subnet": subnet},
         )
 
 

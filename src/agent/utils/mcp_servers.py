@@ -1,15 +1,21 @@
 import os
 
-from nika.utils.session import Session
-
 
 class MCPServerConfig:
-    def __init__(self):
-        # load paths
+    def __init__(self, session_id: str):
         base_dir = os.getenv("BASE_DIR")
+        if not base_dir:
+            raise ValueError("BASE_DIR must be set before starting MCP servers.")
+        if not session_id:
+            raise ValueError("session_id is required to start MCP servers.")
         self.mcp_server_dir = os.path.join(base_dir, "src/nika/service/mcp_server")
-        self.session = Session()
-        self.session.load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
+        self.session_id = session_id
+
+    def _server_env(self) -> dict[str, str]:
+        return {
+            "NIKA_SESSION_ID": self.session_id,
+            "BASE_DIR": os.getenv("BASE_DIR", ""),
+        }
 
     def load_config(self, if_submit: bool = False) -> dict:
         if if_submit:
@@ -44,13 +50,6 @@ class MCPServerConfig:
                 },
             }
 
-        # add env to every server for the submission
         for server in config.values():
-            server["env"] = {
-                "LAB_SESSION_ID": self.session.session_id,
-                "root_cause_name": self.session.root_cause_name,
-                "LAB_NAME": self.session.scenario_name,
-                "model": self.session.model,
-                "agent_type": self.session.agent_type,
-            }
+            server["env"] = self._server_env()
         return config

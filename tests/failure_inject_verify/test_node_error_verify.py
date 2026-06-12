@@ -2,15 +2,11 @@
 
 Prerequisites:
   - Docker must be running
-  - Run via: uv run python -m unittest tests/test_node_error_verify.py -v
+  - Run via: uv run python -m unittest tests/failure_inject_verify/test_node_error_verify.py -v
 """
 
-import re
 import unittest
 
-from typer.testing import CliRunner
-
-from nika.cli.main import app
 from nika.orchestrator.problems.network_node_error.controller_issues import (
     FlowRuleLoopDetection,
     FlowRuleLoopParams,
@@ -36,40 +32,12 @@ from nika.orchestrator.problems.network_node_error.swicth_router_failure import 
     FrrDownDetection,
     FrrDownParams,
 )
-from nika.utils.session_store import SessionStore
+
+from tests.failure_inject_verify.base import FailureInjectVerifyTestCase
 
 
-def _setup_env(runner, scenario):
-    result = runner.invoke(app, ["env", "run", scenario])
-    if result.exit_code != 0:
-        raise RuntimeError(f"nika env run failed:\n{result.output}")
-    match = re.search(r"session_id=(\S+)", result.output.strip())
-    if match is None:
-        raise RuntimeError(f"session_id not found in env run output:\n{result.output}")
-    session_id = match.group(1)
-    row = SessionStore().get_session(session_id)
-    return session_id, row["lab_name"]
-
-
-def _teardown_env(runner, session_id):
-    runner.invoke(app, ["env", "stop", "--session-id", session_id])
-
-
-class Bmv2SwitchDownVerifyTest(unittest.TestCase):
+class Bmv2SwitchDownVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "p4_counter"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
 
     def test_bmv2_switch_down_verify_true_after_inject(self):
         """verify_fault returns verified=True after simple_switch is killed."""
@@ -100,28 +68,15 @@ class Bmv2SwitchDownVerifyTest(unittest.TestCase):
         self.assertTrue(result["verified"], f"Expected P4 table missing to be verified: {result}")
 
     def test_p4_table_misconfig_verify_true_after_inject(self):
-        """verify_fault returns verified=True after table entries are modified with 66:66: MACs."""
+        """verify_fault returns verified=True after a match-table entry is modified via CLI."""
         problem = self._problem(P4TableEntryMisconfigDetection)
         problem.inject_fault()
         result = problem.verify_fault()
         self.assertTrue(result["verified"], f"Expected P4 table misconfig to be verified: {result}")
 
 
-class P4MPLSVerifyTest(unittest.TestCase):
+class P4MPLSVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "p4_mpls"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
 
     def test_p4_mpls_label_limit_exceeded_verify_true_after_inject(self):
         """verify_fault returns verified=True after MPLS label limit is reduced."""
@@ -132,54 +87,20 @@ class P4MPLSVerifyTest(unittest.TestCase):
         self.assertTrue(result["details"]["const_modified"])
 
 
-class FrrDownVerifyTest(unittest.TestCase):
+class FrrDownVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "simple_bgp"
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
-
-    @unittest.expectedFailure
     def test_frr_down_verify_true_after_inject(self):
-        """KNOWN ISSUE: systemctl stop frr is no-op in Kathara; ospfd won't stop."""
+        """verify_fault returns verified=True after FRR daemons are killed via pkill."""
         problem = self._problem(FrrDownDetection)
         problem.inject_fault()
         result = problem.verify_fault()
         self.assertTrue(result["verified"], f"Expected FRR down to be verified: {result}")
 
 
-class SDNControllerVerifyTest(unittest.TestCase):
+class SDNControllerVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "sdn_star"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        result = self.runner.invoke(app, ["env", "run", self.SCENARIO, "-t", "s"])
-        if result.exit_code != 0:
-            raise RuntimeError(f"nika env run failed:\n{result.output}")
-        match = re.search(r"session_id=(\S+)", result.output.strip())
-        if match is None:
-            raise RuntimeError(f"session_id not found in env run output:\n{result.output}")
-        self.session_id = match.group(1)
-        row = SessionStore().get_session(self.session_id)
-        self.lab_name = row["lab_name"]
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
+    ENV_RUN_ARGS = ["-t", "s"]
 
     def test_sdn_controller_crash_verify_true_after_inject(self):
         """verify_fault returns verified=True after POX controller is killed."""

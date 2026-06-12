@@ -1,6 +1,5 @@
-import docker
-
 from nika.service.kathara import KatharaAPIALL
+from nika.service.kathara.docker_utils import get_machine_container
 from nika.utils.logger import system_logger
 
 """ Fault injector for Kathara """
@@ -23,11 +22,7 @@ class FaultInjectorBase:
 
     def inject_host_down(self, host_name: str):
         """Inject a host crash fault by pausing the container."""
-        docker_client = docker.from_env()
-        candidates = docker_client.containers.list(all=True, filters={"name": host_name})
-        if not candidates:
-            raise ValueError(f"No container found for host {host_name}")
-        container = next((item for item in candidates if item.name == host_name), candidates[0])
+        container = get_machine_container(lab_name=self.kathara_api.lab.name, host_name=host_name)
         container.reload()
         if container.status != "paused":
             container.pause()
@@ -35,11 +30,7 @@ class FaultInjectorBase:
 
     def recover_host_down(self, host_name: str):
         """Recover from host crash fault by unpausing or starting the container."""
-        docker_client = docker.from_env()
-        candidates = docker_client.containers.list(all=True, filters={"name": host_name})
-        if not candidates:
-            raise ValueError(f"No container found for host {host_name}")
-        container = next((item for item in candidates if item.name == host_name), candidates[0])
+        container = get_machine_container(lab_name=self.kathara_api.lab.name, host_name=host_name)
         container.reload()
         if container.status == "paused":
             container.unpause()
@@ -101,147 +92,6 @@ class FaultInjectorBase:
         cmd = f"./hostlab/{host_name}.startup"
         self.kathara_api.exec_cmd(host_name, cmd)
         self.logger.info(f"Recovered bmv2 down fault on {host_name}.")
-
-    def inject_bgp_misconfig(self, host_name: str, correct_asn: int, wrong_asn: int):
-        """Inject a BGP ASN misconfiguration by changing the ASN on a router, from real_asn to target_asn."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            f"vtysh -c 'show running-config' | sed 's/^router bgp {correct_asn}$/router bgp {wrong_asn}/' > /etc/frr/frr.conf && systemctl restart frr",
-        )
-        self.logger.info(f"Injected BGP ASN misconfiguration on {host_name} from ASN {correct_asn} to {wrong_asn}.")
-
-    def recover_bgp_misconfig(self, host_name: str, correct_asn: int, wrong_asn: int):
-        """Recover from a BGP ASN misconfiguration by resetting the ASN on a router."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            f"vtysh -c 'show running-config' | sed 's/^router bgp {wrong_asn}$/router bgp {correct_asn}/' > /etc/frr/frr.conf && systemctl restart frr",
-        )
-        self.logger.info(f"Recovered BGP ASN misconfiguration on {host_name} from ASN {wrong_asn} to {correct_asn}.")
-
-    def inject_bgp_remove_advertisement(self, host_name: str):
-        """Inject a BGP missing route by commenting out the network advertisement."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            "sed -i.bak -E 's/^([[:space:]]*)network /\1# network /' /etc/frr/frr.conf && systemctl restart frr",
-        )
-        self.logger.info(f"Injected BGP missing route on {host_name}.")
-
-    def recover_bgp_remove_advertisement(self, host_name: str):
-        """Recover from a BGP missing route by recovering the backed up frr.conf file."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            "mv /etc/frr/frr.conf.bak /etc/frr/frr.conf && systemctl restart frr",
-        )
-        self.logger.info(f"Recovered BGP missing route on {host_name}.")
-
-    def inject_bgp_add_interface(self, host_name: str, intf_name: str, ip_address: str):
-        """Inject a BGP add interface by adding a new interface with IP address and configuring BGP."""
-        cmd = f"vtysh -c 'configure terminal' -c 'interface {intf_name}' -c 'ip address {ip_address}' "
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Injected BGP add interface on {host_name}: {intf_name} with IP {ip_address}.")
-
-    def recover_bgp_add_interface(self, host_name: str, intf_name: str, ip_address: str = None):
-        """Recover from a BGP add interface by removing the interface configuration."""
-        if intf_name == "lo":
-            cmd = f"vtysh -c 'configure terminal' -c 'interface {intf_name}' -c 'no ip address {ip_address}' -c 'end' -c 'write memory' "
-        else:
-            cmd = f"vtysh -c 'configure terminal' -c 'no interface {intf_name}' -c 'end' -c 'write memory' "
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Recovered BGP add interface on {host_name}: {intf_name}.")
-
-    def inject_bgp_add_advertisement(self, host_name: str, network: str, AS: str):
-        """Inject a BGP add route by adding a network advertisement."""
-        cmd = f"vtysh -c 'configure terminal' -c 'router bgp {AS}' -c 'network {network}' -c 'end' -c 'write memory' "
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.kathara_api.exec_cmd(
-            host_name,
-            "systemctl restart frr",
-        )
-        self.logger.info(f"Injected BGP add route on {host_name}: {network}.")
-
-    def recover_bgp_add_advertisement(self, host_name: str, network: str, AS: str):
-        """Recover from a BGP add route by removing the network advertisement."""
-        cmd = (
-            f"vtysh -c 'configure terminal' -c 'router bgp {AS}' -c 'no network {network}' -c 'end' -c 'write memory' "
-        )
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Recovered BGP add route on {host_name}: {network}.")
-
-    def inject_add_route_blackhole_nexthop(self, host_name: str, network: str):
-        """Inject a fault by adding a static blackhole route on a host."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            f"ip route replace blackhole {network}",
-        )
-        self.logger.info(f"Injected addition of blackhole route {network} on {host_name}.")
-
-    def recover_add_route_blackhole_nexthop(self, host_name: str, network: str):
-        """Recover from a fault by deleting a static blackhole route on a host."""
-        self.kathara_api.exec_cmd(
-            host_name,
-            f"ip route del blackhole {network}",
-        )
-        self.logger.info(f"Recovered addition of blackhole route {network} on {host_name}.")
-
-    def inject_add_route_blackhole_advertise(self, host_name: str, network: str, AS: str):
-        cmd = (
-            "vtysh -c 'configure terminal' "
-            f"-c 'ip route {network} Null0' "
-            f"-c 'router bgp {AS}' "
-            f"-c 'network {network}' "
-            "-c 'end' "
-            "-c 'write memory' "
-        )
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Injected BGP advertise blackhole route on {host_name}: {network}.")
-
-    def recover_add_route_blackhole_advertise(self, host_name: str, network: str, AS: str):
-        cmd = (
-            "vtysh -c 'configure terminal' "
-            f"-c 'no ip route {network} Null0' "
-            f"-c 'router bgp {AS}' "
-            f"-c 'no network {network}' "
-            "-c 'end' "
-            "-c 'write memory' "
-        )
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Recovered BGP advertise blackhole route on {host_name}: {network}.")
-
-    def inject_rip_missing_route(self, host_name: str, network: str):
-        """Inject a RIP missing route by commenting out the network advertisement."""
-        cmd = f"vtysh -c 'configure terminal' -c 'router rip' -c 'no network {network}' -c 'end' -c 'write memory' && systemctl restart frr"
-        res = self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Injected RIP missing route on {host_name}: {network}.")
-
-    def recover_rip_missing_route(self, host_name: str, network: str):
-        """Recover from a RIP missing route by recovering the backed up frr.conf file."""
-        cmd = f"vtysh -c 'configure terminal' -c 'router rip' -c 'network {network}' -c 'end' -c 'write memory' && systemctl restart frr"
-        self.kathara_api.exec_cmd(
-            host_name,
-            cmd,
-        )
-        self.logger.info(f"Recovered RIP missing route on {host_name}: {network}.")
 
 
 if __name__ == "__main__":

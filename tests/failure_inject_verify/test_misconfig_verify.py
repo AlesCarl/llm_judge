@@ -2,93 +2,42 @@
 
 Prerequisites:
   - Docker must be running
-  - Run via: uv run python -m unittest tests/test_misconfig_verify.py -v
+  - Run via: uv run python -m unittest tests/failure_inject_verify/test_misconfig_verify.py -v
 """
 
-import re
 import unittest
 
-from typer.testing import CliRunner
-
-from nika.cli.main import app
 from nika.orchestrator.problems.misconfigurations.acl_error import (
     ARPAclBlockDetection,
-    ARPAclBlockParams,
     BGPAclBlockDetection,
-    BGPAclBlockParams,
-    DNSPortBlockedDetection,
-    DNSPortBlockedParams,
     HttpAclBlockDetection,
-    HttpAclBlockParams,
     IcmpAclBlockDetection,
-    IcmpAclBlockParams,
-    OSPFAclBlockDetection,
-    OSPFAclBlockParams,
 )
 from nika.orchestrator.problems.misconfigurations.bgp import (
     BGPAsnMisconfigDetection,
-    BGPAsnMisconfigParams,
     BGPBlackholeRouteLeakDetection,
     BGPHijackingDetection,
-    BGPHijackingParams,
     BGPMissingAdvertiseDetection,
-    BGPMissingAdvertiseParams,
     StaticBlackHoleDetection,
-    StaticBlackHoleParams,
 )
-from nika.orchestrator.problems.misconfigurations.dhcp import DHCPMissingSubnetDetection, DHCPMissingSubnetParams
-from nika.orchestrator.problems.misconfigurations.mac import MacAddressConflictDetection, MacAddressConflictParams
+from nika.orchestrator.problems.misconfigurations.dhcp import DHCPMissingSubnetDetection
+from nika.orchestrator.problems.misconfigurations.mac import MacAddressConflictDetection
 from nika.orchestrator.problems.misconfigurations.ospf import (
     OSPFAreaMisconfigDetection,
-    OSPFAreaMisconfigParams,
     OSPFNeighborMissingDetection,
-    OSPFNeighborMissingParams,
 )
 from nika.orchestrator.problems.misconfigurations.p4 import (
     P4AggressiveDetectionThresholdsDetection,
-    P4AggressiveDetectionThresholdsParams,
 )
-from nika.utils.session_store import SessionStore
+from tests.failure_inject_verify.base import FailureInjectVerifyTestCase
 
 
-def _setup_env(runner, scenario, **kwargs):
-    args = ["env", "run", scenario]
-    for k, v in kwargs.items():
-        args += [f"--{k}", str(v)]
-    result = runner.invoke(app, args)
-    if result.exit_code != 0:
-        raise RuntimeError(f"nika env run failed:\n{result.output}")
-    match = re.search(r"session_id=(\S+)", result.output.strip())
-    if match is None:
-        raise RuntimeError(f"session_id not found in env run output:\n{result.output}")
-    session_id = match.group(1)
-    row = SessionStore().get_session(session_id)
-    return session_id, row["lab_name"]
-
-
-def _teardown_env(runner, session_id):
-    runner.invoke(app, ["env", "stop", "--session-id", session_id])
-
-
-class OSPFMisconfigVerifyTest(unittest.TestCase):
+class OSPFMisconfigVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "ospf_enterprise_static"
+    ENV_RUN_ARGS = ["-t", "s"]
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
-
-    @unittest.expectedFailure
     def test_ospf_area_misconfig_verify(self):
-        """KNOWN ISSUE: systemctl restart is no-op in Kathara; in-memory config unchanged."""
+        """verify_fault returns verified=True when file area differs from in-memory area after inject."""
         problem = self._problem(OSPFAreaMisconfigDetection)
         problem.inject_fault()
         result = problem.verify_fault()
@@ -103,33 +52,18 @@ class OSPFMisconfigVerifyTest(unittest.TestCase):
         self.assertGreater(result["details"]["commented_network_count"], 0)
 
 
-class BGPMisconfigVerifyTest(unittest.TestCase):
+class BGPMisconfigVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "simple_bgp"
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
-
-    @unittest.expectedFailure
     def test_bgp_asn_misconfig_verify(self):
-        """KNOWN ISSUE: systemctl restart is no-op in Kathara; in-memory ASN unchanged."""
+        """verify_fault returns verified=True when file ASN differs from in-memory ASN after inject."""
         problem = self._problem(BGPAsnMisconfigDetection)
         problem.inject_fault()
         result = problem.verify_fault()
         self.assertTrue(result["verified"], f"Expected BGP ASN misconfig: {result}")
 
-    @unittest.expectedFailure
     def test_bgp_missing_advertise_verify(self):
-        """KNOWN ISSUE: sed \\1 escape bug + systemctl no-op."""
+        """verify_fault returns verified=True after network lines are commented out in frr.conf."""
         problem = self._problem(BGPMissingAdvertiseDetection)
         problem.inject_fault()
         result = problem.verify_fault()
@@ -158,21 +92,9 @@ class BGPMisconfigVerifyTest(unittest.TestCase):
         self.assertTrue(result["verified"], f"Expected BGP hijacking: {result}")
 
 
-class MacMisconfigVerifyTest(unittest.TestCase):
+class MacMisconfigVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "ospf_enterprise_static"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
+    ENV_RUN_ARGS = ["-t", "s"]
 
     def test_mac_address_conflict_verify_true_after_inject(self):
         """verify_fault returns verified=True after MAC address conflict is injected."""
@@ -183,21 +105,9 @@ class MacMisconfigVerifyTest(unittest.TestCase):
         self.assertEqual(result["details"]["mac_0"].lower(), result["details"]["mac_1"].lower())
 
 
-class DHCPMisconfigVerifyTest(unittest.TestCase):
+class DHCPMisconfigVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "ospf_enterprise_dhcp"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
+    ENV_RUN_ARGS = ["-t", "s"]
 
     def test_dhcp_missing_subnet_verify_true_after_inject(self):
         """verify_fault returns verified=True after DHCP subnet is deleted."""
@@ -208,21 +118,8 @@ class DHCPMisconfigVerifyTest(unittest.TestCase):
         self.assertIn("absent", result["details"]["grep_result"])
 
 
-class ACLBlockVerifyTest(unittest.TestCase):
+class ACLBlockVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "simple_bgp"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
 
     def test_bgp_acl_block_verify_true_after_inject(self):
         """verify_fault returns verified=True after BGP ACL block is injected."""
@@ -253,21 +150,8 @@ class ACLBlockVerifyTest(unittest.TestCase):
         self.assertTrue(result["verified"], f"Expected ARP ACL block: {result}")
 
 
-class P4MisconfigVerifyTest(unittest.TestCase):
+class P4MisconfigVerifyTest(FailureInjectVerifyTestCase):
     SCENARIO = "p4_bloom_filter"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        self.session_id, self.lab_name = _setup_env(self.runner, self.SCENARIO)
-
-    def tearDown(self) -> None:
-        _teardown_env(self.runner, self.session_id)
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=self.SCENARIO, lab_name=self.lab_name)
 
     def test_p4_aggressive_detection_thresholds_verify_true_after_inject(self):
         """verify_fault returns verified=True after PACKET_THRESHOLD is reduced."""

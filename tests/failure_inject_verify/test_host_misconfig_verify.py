@@ -5,15 +5,11 @@ verify_fault to confirm the environment state matches what was injected.
 
 Prerequisites:
   - Docker must be running
-  - Run via: uv run python -m unittest tests/test_host_misconfig_verify.py -v
+  - Run via: uv run python -m unittest tests/failure_inject_verify/test_host_misconfig_verify.py -v
 """
 
-import re
 import unittest
 
-from typer.testing import CliRunner
-
-from nika.cli.main import app
 from nika.orchestrator.problems.end_host_failure.host_misconfig import (
     HostIPConflictDetection,
     HostIPConflictParams,
@@ -28,41 +24,17 @@ from nika.orchestrator.problems.end_host_failure.host_misconfig import (
     HostMissingIPDetection,
     HostMissingIPParams,
 )
-from nika.utils.session_store import SessionStore
 
-SCENARIO = "simple_bgp"
+from tests.failure_inject_verify.base import FailureInjectVerifyTestCase
+
 HOST = "pc1"
 HOST2 = "pc2"
 
 
-class HostMisconfigVerifyIntegrationTest(unittest.TestCase):
+class HostMisconfigVerifyIntegrationTest(FailureInjectVerifyTestCase):
     """Verify that verify_fault correctly reflects real container network state."""
 
-    runner: CliRunner
-    session_id: str
-    lab_name: str
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.runner = CliRunner()
-
-    def setUp(self) -> None:
-        result = self.runner.invoke(app, ["env", "run", SCENARIO])
-        if result.exit_code != 0:
-            raise RuntimeError(f"nika env run failed:\n{result.output}")
-        match = re.search(r"session_id=(\S+)", result.output.strip())
-        if match is None:
-            raise RuntimeError(f"session_id not found in env run output:\n{result.output}")
-        self.session_id = match.group(1)
-        row = SessionStore().get_session(self.session_id)
-        self.lab_name = row["lab_name"]
-
-    def tearDown(self) -> None:
-        if getattr(self, "session_id", None):
-            self.runner.invoke(app, ["env", "stop", "--session-id", self.session_id])
-
-    def _problem(self, cls_):
-        return cls_(scenario_name=SCENARIO, lab_name=self.lab_name)
+    SCENARIO = "simple_bgp"
 
     # ------------------------------------------------------------------
     # HostMissingIP

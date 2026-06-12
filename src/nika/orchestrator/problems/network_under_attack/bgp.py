@@ -4,13 +4,13 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from nika.generator.fault.injector_base import FaultInjectorBase
 from nika.net_env.net_env_pool import get_net_env_instance
 from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel, build_verify_result
 from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
+from nika.utils.logger import system_logger
 
 # ==================================================================
 # Problem: BGP hijacking problem.
@@ -35,10 +35,11 @@ class BGPHijackingBase:
         super().__init__()
         self.net_env = get_net_env_instance(scenario_name, **kwargs)
         self.kathara_api = KatharaAPIALL(lab_name=self.net_env.lab.name)
-        self.injector = FaultInjectorBase(lab_name=self.net_env.lab.name)
+        self.logger = system_logger
         self.faulty_devices = [random.choice(self.net_env.routers)]
-        web_server = self.net_env.servers["web"][-1]
-        self.target_network = self.kathara_api.get_host_ip(web_server, with_prefix=True)
+        web_servers = self.net_env.servers.get("web", [])
+        target_host = web_servers[-1] if web_servers else self.net_env.hosts[-1]
+        self.target_network = self.kathara_api.get_host_ip(target_host, with_prefix=True)
         self.target_network = str(
             ipaddress.ip_network(self.target_network, strict=False).subnets(new_prefix=25).__next__()
         )
@@ -49,8 +50,16 @@ class BGPHijackingBase:
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
         target_network = params.target_network if params.target_network is not None else self.target_network
         asn_number = self.kathara_api.frr_get_bgp_asn_number(self.faulty_devices[0])
-        self.injector.inject_bgp_add_interface(host_name=host, intf_name="lo", ip_address=target_network)
-        self.injector.inject_bgp_add_advertisement(host_name=host, network=target_network, AS=asn_number)
+        self.kathara_api.exec_cmd(
+            host,
+            f"vtysh -c 'configure terminal' -c 'interface lo' -c 'ip address {target_network}' ",
+        )
+        self.kathara_api.exec_cmd(
+            host,
+            f"vtysh -c 'configure terminal' -c 'router bgp {asn_number}' -c 'network {target_network}' -c 'end' -c 'write memory' ",
+        )
+        self.kathara_api.exec_cmd(host, "systemctl restart frr")
+        self.logger.info(f"Injected BGP hijacking on {host}: {target_network}.")
 
     def verify_fault(self, params: BGPHijackingParams | None = None) -> dict:
         """Verify the router is advertising the hijacked network via BGP."""

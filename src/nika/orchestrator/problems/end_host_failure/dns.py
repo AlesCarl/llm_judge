@@ -70,19 +70,17 @@ class DNSRecordErrorBase:
         cmd = r"sed -i 's/^\({name}[[:space:]]\+IN[[:space:]]\+A[[:space:]]\+\)[0-9\.]\+/\1{new_ip}/' /etc/bind/db.{domain}"
         cmd = cmd.format(name=target_website, new_ip=wrong_ip, domain=target_domain)
         self.kathara_api.exec_cmd(host, cmd)
-        self.kathara_api.exec_cmd(host, "systemctl restart named")
+        self.kathara_api.exec_cmd(
+            host,
+            "rndc reload 2>/dev/null || service named restart 2>/dev/null || true",
+        )
         logger.info(
             f"Injecting DNS record error on {host}: mapping {target_website}:{target_domain} "
             f"to wrong IP {wrong_ip} instead of {self.right_ip}"
         )
 
     def verify_fault(self, params: DNSRecordErrorParams | None = None) -> dict:
-        """Verify the DNS zone file contains the wrong IP.
-
-        KNOWN ISSUE: systemctl restart named is a no-op in Kathara (no systemd).
-        The file will be modified but the daemon won't reload. This verify checks
-        file content only, not DNS resolution.
-        """
+        """Verify the DNS zone file contains the wrong IP and the running daemon serves it."""
         if params is None:
             params = DNSRecordErrorParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
@@ -93,7 +91,13 @@ class DNSRecordErrorBase:
             host,
             f"grep '{target_website}.*{wrong_ip}' /etc/bind/db.{target_domain} 2>/dev/null && echo found || echo absent",
         ).strip()
-        verified = "found" in grep_result
+        file_has_wrong_ip = "found" in grep_result
+        dig_result = self.kathara_api.exec_cmd(
+            host,
+            f"dig +short {target_website}.{target_domain} @127.0.0.1 2>/dev/null || echo absent",
+        ).strip()
+        dns_resolves_wrong = wrong_ip in dig_result
+        verified = file_has_wrong_ip and dns_resolves_wrong
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
@@ -103,6 +107,9 @@ class DNSRecordErrorBase:
                 "target_website": target_website,
                 "wrong_ip": wrong_ip,
                 "grep_result": grep_result,
+                "file_has_wrong_ip": file_has_wrong_ip,
+                "dig_result": dig_result,
+                "dns_resolves_wrong": dns_resolves_wrong,
             },
         )
 

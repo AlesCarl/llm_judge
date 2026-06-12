@@ -1,13 +1,11 @@
-import os
-
 from mcp.server.fastmcp import FastMCP
 
 from nika.service.kathara import KatharaFRRAPI
+from nika.service.mcp_server.mcp_session_context import get_lab_name
 from nika.utils.errors import safe_tool
 
 # Initialize FastMCP server
 mcp = FastMCP("kathara_bmv2_mcp_server")
-LAB_NAME = os.getenv("LAB_NAME")
 
 
 @safe_tool
@@ -21,7 +19,7 @@ def frr_get_bgp_conf(router_name: str) -> str:
     Returns:
         str: The BGP configuration from the FRR router.
     """
-    kathara_api = KatharaFRRAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaFRRAPI(lab_name=get_lab_name())
     return kathara_api.frr_get_bgp_conf(router_name)
 
 
@@ -35,7 +33,7 @@ def frr_show_running_config(router_name: str) -> str:
     Returns:
         str: The running configuration from the FRR router.
     """
-    kathara_api = KatharaFRRAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaFRRAPI(lab_name=get_lab_name())
     return kathara_api.frr_show_running_config(router_name)
 
 
@@ -49,7 +47,7 @@ def frr_show_ip_route(router_name: str) -> str:
     Returns:
         str: The IP routing table from the FRR router.
     """
-    kathara_api = KatharaFRRAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaFRRAPI(lab_name=get_lab_name())
     return kathara_api.frr_show_route(router_name)
 
 
@@ -64,7 +62,7 @@ def frr_get_ospf_conf(router_name: str) -> str:
     Returns:
         str: The OSPF configuration from the FRR router.
     """
-    kathara_api = KatharaFRRAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaFRRAPI(lab_name=get_lab_name())
     return kathara_api.frr_get_ospf_conf(router_name)
 
 
@@ -72,7 +70,7 @@ def frr_get_ospf_conf(router_name: str) -> str:
 @mcp.tool()
 def frr_exec(router_name: str, command: str) -> str:
     """Execute a vtysh command on a FRR router."""
-    kathara_api = KatharaFRRAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaFRRAPI(lab_name=get_lab_name())
     return kathara_api.frr_exec(router_name, command)
 
 

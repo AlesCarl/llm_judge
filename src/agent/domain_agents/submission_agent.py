@@ -19,8 +19,8 @@ SUBMIT_PROMPT_TEMPLATE = dedent("""\
 
 
 class SubmissionAgent:
-    def __init__(self, llm_backend: str = "openai", model: str = "gpt-5-mini"):
-        mcp_server_config = MCPServerConfig().load_config(if_submit=True)
+    def __init__(self, session_id: str, llm_backend: str = "openai", model: str = "gpt-5-mini"):
+        mcp_server_config = MCPServerConfig(session_id=session_id).load_config(if_submit=True)
         self.client = MultiServerMCPClient(connections=mcp_server_config)
         self.tools = None
 

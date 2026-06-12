@@ -123,34 +123,36 @@ class FrrDownBase:
         if params is None:
             params = FrrDownParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        self.injector.inject_service_down(host_name=host, service_name=params.service_name)
+        # systemctl is a no-op in Kathara; kill FRR daemons directly with pkill.
+        # watchfrr must be killed first so it does not restart the routing daemons.
+        for daemon in ("watchfrr", "zebra", "mgmtd", "ospfd", "bgpd", "staticd", "ospf6d", "ripd"):
+            self.injector.inject_process_kill(host_name=host, process_name=daemon)
 
     def verify_fault(self, params: FrrDownParams | None = None) -> dict:
-        """Verify FRR routing processes are not running.
-
-        KNOWN ISSUE: systemctl stop is a no-op in Kathara (no systemd).
-        The process won't be killed. This verify is expected to fail.
-        """
+        """Verify FRR is down by checking zebra is not running and routing is unavailable."""
         if params is None:
             params = FrrDownParams()
         host = params.host_name if params.host_name is not None else self.faulty_devices[0]
-        ospfd_output = self.kathara_api.exec_cmd(host, "pgrep -a ospfd 2>/dev/null || echo NONE").strip()
+        zebra_output = self.kathara_api.exec_cmd(host, "pgrep -a zebra 2>/dev/null || echo NONE").strip()
+        # show version still succeeds in FRR 9.x when zebra is down; use show ip route instead.
         vtysh_output = self.kathara_api.exec_cmd(
-            host, "vtysh -c 'show version' 2>&1 | head -1"
+            host, "vtysh -c 'show ip route' 2>&1 | head -3"
         ).strip()
-        ospfd_down = ospfd_output == "NONE" or "ospfd" not in ospfd_output
-        vtysh_failed = "failed to connect" in vtysh_output.lower() or "error" in vtysh_output.lower()
-        verified = ospfd_down and vtysh_failed
+        zebra_down = zebra_output == "NONE" or "zebra" not in zebra_output
+        routing_unavailable = (
+            "failed to connect" in vtysh_output.lower() or "not running" in vtysh_output.lower()
+        )
+        verified = zebra_down and routing_unavailable
         return build_verify_result(
             root_cause_name=self.root_cause_name,
             faulty_devices=self.faulty_devices,
             verified=verified,
             details={
                 "host": host,
-                "ospfd_output": ospfd_output,
+                "zebra_output": zebra_output,
                 "vtysh_output": vtysh_output,
-                "ospfd_down": ospfd_down,
-                "vtysh_failed": vtysh_failed,
+                "zebra_down": zebra_down,
+                "routing_unavailable": routing_unavailable,
             },
         )
 
