@@ -12,7 +12,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome", "overall_score"]
+_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome"]
 
 
 

@@ -10,6 +10,8 @@ shared prompt template, final-round instruction).
 
 from dataclasses import dataclass, field
 
+from agent.utils.template import CRITERIA_RUBRIC
+
 
 ### Shared prompt fragments
 
@@ -33,8 +35,8 @@ ${trace}
 [System]
 We would like your feedback on the performance of an autonomous network
 troubleshooting agent, given the ground truth and the action trace above.
-Consider relevance, correctness, efficiency, clarity, and final outcome.
 
+""" + CRITERIA_RUBRIC + """
 There are other expert referees assigned the same task. It is your
 responsibility to discuss with them and think critically before making
 your final judgement.

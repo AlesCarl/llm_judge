@@ -17,7 +17,7 @@ import krippendorff
 
 from pathlib import Path
 
-_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome", "overall_score"]
+_CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome"]
 
 
 def _load_round_scores(debate_rounds_path: str, round_num: int = 1) -> dict[str, dict[str, int]] | None:
