@@ -51,8 +51,8 @@ _CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome
 _CONSENSUS_THRESHOLD = 1
 
 # temperatures for the two opposing roles
-_CRITIC_TEMPERATURE = 0.2
-_ADVOCATE_TEMPERATURE = 0.6
+_CRITIC_TEMPERATURE = 0.1
+_ADVOCATE_TEMPERATURE = 0.1
 
 
 ##  Debate player 
