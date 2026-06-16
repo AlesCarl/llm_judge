@@ -112,7 +112,7 @@ _CRITIC = RoleConfig(
 
 _NETWORK_ENGINEER = RoleConfig(
     name="Network Engineer",
-    temperature=0.3,
+    temperature=0.2,
     role_description=(
         "You are the Network Engineer, a domain expert on this referee panel. "
         "Focus on technical correctness: are the diagnostic commands and tool "
@@ -125,7 +125,7 @@ _NETWORK_ENGINEER = RoleConfig(
 
 _GENERAL_OPERATOR = RoleConfig(
     name="General Operator",
-    temperature=0.5,
+    temperature=0.2,
     role_description=(
         "You are the General Operator, a pragmatic network operations referee. "
         "Focus on the operational value of the agent's run: is the final "
