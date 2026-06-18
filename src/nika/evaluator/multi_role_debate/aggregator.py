@@ -4,8 +4,11 @@ Each debater produces an independent judgement (scores + reasoning),
 then we collapse the panel into a single JudgeResponse via simple per-criterion averaging.
 
 Aggregation rules:
-  - Per-criterion score: arithmetic mean across debaters, rounded to
-    the nearest integer (Scores schema requires int 1-5).
+  - Per-criterion score: competence-WEIGHTED mean across debaters
+    (weights from COMPETENCE_WEIGHTS), rounded to the nearest integer
+    (Scores schema requires int 1-5). final_outcome is treated like the
+    other criteria — the aggregate may land on 2 or 4, which encodes
+    panel disagreement (e.g. "mostly failed with one dissenter").
   - Per-criterion comment: concatenated debater comments, each prefixed
     with the role name, so the JudgeResponse keeps the diversity of
     perspectives in plain text.
@@ -26,6 +29,7 @@ from nika.evaluator.schemas import (
     Score,
     Scores,
 )
+from nika.evaluator.multi_role_debate.roles_config import COMPETENCE_WEIGHTS
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 # Criteria evaluated by each debater
 _CRITERIA = ("relevance", "correctness", "efficiency", "clarity", "final_outcome")
-
 
 
 def aggregate_responses(
@@ -82,22 +85,35 @@ def aggregate_responses(
             skipped,
         )
 
-    # 1. Per-criterion: mean score + concatenated commentary
+    # 1. Per-criterion: COMPETENCE-WEIGHTED mean score + concatenated comments.
+    #    Each role's vote is weighted by its domain competence on the criterion
+    #    (COMPETENCE_WEIGHTS); weights are renormalised over the debaters that
+    #    actually produced a parseable response. All criteria, final_outcome
+    #    included, are rounded to the nearest integer in [1, 5].
     aggregated_scores: dict[str, Score] = {}
     for criterion in _CRITERIA:
-        criterion_scores = [
-            getattr(resp.scores, criterion).score for _, resp in valid
+        weights_row = COMPETENCE_WEIGHTS.get(criterion, {})
+        pairs = [
+            (name, getattr(resp.scores, criterion).score) for name, resp in valid
         ]
+        raw_w = [weights_row.get(name, 1.0) for name, _ in pairs]
+        total_w = sum(raw_w)
+        if total_w <= 0:
+            raw_w = [1.0] * len(pairs)
+            total_w = float(len(pairs))
+        avg = sum(w * s for w, (_, s) in zip(raw_w, pairs)) / total_w
+
+        rounded = max(1, min(5, round(avg)))
+
         criterion_comments = [
-            f"[{name}] {getattr(resp.scores, criterion).comment}"
+            f"[{name}] (w={weights_row.get(name, 1.0):.2f}) "
+            f"{getattr(resp.scores, criterion).comment}"
             for name, resp in valid
         ]
-        avg = statistics.mean(criterion_scores)
-        rounded = max(1, min(5, round(avg))) 
         aggregated_scores[criterion] = Score(
             score=rounded,
             comment=(
-                f"Panel mean = {avg:.2f} (rounded to {rounded}).\n"
+                f"Weighted panel mean = {avg:.2f} (aggregated to {rounded}).\n"
                 + "\n".join(criterion_comments)
             ),
         )
@@ -122,12 +138,13 @@ def aggregate_responses(
         f"{audit_trail}"
     )
     reasoning_for_overall_score = (
-        f"Per-criterion scores are the arithmetic mean of the panel's "
-        f"final-round DebaterResponse values, rounded to the nearest "
-        f"integer in [1, 5]. The panel-mean overall_score "
+        f"Per-criterion scores are the competence-WEIGHTED mean of the panel's "
+        f"final-round DebaterResponse values (weights per criterion from "
+        f"COMPETENCE_WEIGHTS), rounded to the nearest integer in [1, 5]. "
+        f"The unweighted panel-mean overall_score "
         f"(average of each debater's overall_score) is "
         f"{panel_overall:.2f}; the JudgeResponse.overall_score is "
-        f"recomputed from the rounded per-criterion scores "
+        f"recomputed from the aggregated per-criterion scores "
         f"({scores.overall_score:.2f})."
     )
 

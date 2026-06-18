@@ -103,43 +103,77 @@ Respond with ONLY a JSON object in the same structure as before — no markdown,
 """
 
 
-MODERATOR_SYSTEM_PROMPT = (
-    "You are the moderator of an expert judge panel evaluating a network troubleshooting agent. "
-    "Your task is to determine whether the panel has reached sufficient consensus on the "
-    "criteria where scores still diverge."
-)
 
-
-MODERATOR_PROMPT = """\
-The panel members' scores differ on the following criteria (scores shown per member):
-{divergent_criteria}
-
-Here are their full assessments for context:
-
-{assessments}
-
-Determine whether the reasoning behind these divergent scores is fundamentally aligned \
-(members agree on the facts but weight them differently) or genuinely conflicting \
-(members interpret the evidence differently).
-
-Respond with ONLY a JSON object — no markdown, no extra text:
-{{"consensus": true or false, "summary": "brief explanation of agreements and remaining disagreements"}}\
-"""
+# MODERATOR_SYSTEM_PROMPT = (
+#     "You are the moderator of an expert judge panel evaluating a network troubleshooting agent. "
+#     "Your task is to determine whether the panel has reached sufficient consensus on the "
+#     "criteria where scores still diverge."
+# )
+#
+#
+# MODERATOR_PROMPT = """\
+# The panel members' scores differ on the following criteria (scores shown per member):
+# {divergent_criteria}
+#
+# Here are their full assessments for context:
+#
+# {assessments}
+#
+# Determine whether the reasoning behind these divergent scores is fundamentally aligned \
+# (members agree on the facts but weight them differently) or genuinely conflicting \
+# (members interpret the evidence differently).
+#
+# Respond with ONLY a JSON object — no markdown, no extra text:
+# {{"consensus": true or false, "summary": "brief explanation of agreements and remaining disagreements"}}\
+# """
 
 
 
 SYNTHESIS_SYSTEM_PROMPT = (
-    "You are the final synthesizer for an expert judge panel. "
-    "Given the complete debate transcript, produce a balanced and definitive structured evaluation."
+    "You are the final judge of an expert panel evaluating a network troubleshooting agent. "
+    "You have access to the ground truth, the agent's action trace, the full debate transcript, "
+    "and the debaters' final per-criterion scores. Render a definitive, evidence-grounded "
+    "structured evaluation."
 )
 
-SYNTHESIS_PROMPT = """\
-Below is the full transcript of the judge panel debate:
 
+# Injected into SYNTHESIS_PROMPT when the debaters reached numerical consensus
+# (every criterion within 1 point). The judge ratifies the agreement and must
+# stay inside the band the debaters converged to.
+SYNTHESIS_CONSENSUS_INSTRUCTION = """\
+The debaters reached consensus: their final scores are within 1 point on every criterion.
+Your role is to CONFIRM their agreement. For each criterion, your score MUST fall within the
+[min, max] range of the debaters' final scores shown above. Do not overturn the consensus —
+choose the value within that range that the trace evidence best supports."""
+
+
+# Injected into SYNTHESIS_PROMPT when the debate ended WITHOUT consensus
+# (max rounds reached, some criteria still diverge by >1). The judge arbitrates.
+SYNTHESIS_NO_CONSENSUS_INSTRUCTION = """\
+The debaters did NOT reach consensus: on some criteria their final scores still diverge by
+more than 1 point. Your role is to ARBITRATE. For each divergent criterion, decide the score
+yourself based on the evidence in the ground truth and the action trace — weigh the Critic's
+concerns against the Advocate's credits. Your score may sit anywhere within the debaters'
+range, but it must be justified by the facts in the trace, not by splitting the difference."""
+
+
+SYNTHESIS_PROMPT = """\
+[Ground Truth]
+{ground_truth}
+
+[Agent Action Trace]
+{trace}
+
+[Debate Transcript]
 {debate_transcript}
 
-Based on this deliberation, produce the definitive structured evaluation of the agent's performance.
-Weight the Critic's concerns and the Advocate's credits appropriately — neither too harsh nor too lenient.
+[Debaters' Final Scores]
+{debater_votes}
+
+{mode_instruction}
+
+Produce the definitive structured evaluation of the agent's performance, grounded in the
+evidence above.
 
 You MUST respond with a valid JSON object only — no markdown, no extra text, no code blocks.
 The JSON must follow exactly this structure:

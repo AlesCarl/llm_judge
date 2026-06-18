@@ -47,6 +47,7 @@ class MCPServerConfig:
         # add env to every server for the submission
         for server in config.values():
             server["env"] = {
+                **os.environ,  # inherit USER/HOME/PATH so the MCP subprocess keeps the 'ubuntu' identity 
                 "LAB_SESSION_ID": self.session.session_id,
                 "root_cause_name": self.session.root_cause_name,
                 #"LAB_NAME": self.session.scenario_name,

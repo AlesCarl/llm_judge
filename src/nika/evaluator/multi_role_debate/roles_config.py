@@ -53,11 +53,11 @@ ${final_prompt}
 
 DEFAULT_FINAL_PROMPT = """\
 This is the final round. Provide your final judgement as a JSON object.
-Remember: you are not required to match other referees' scores — judge
-independently based on the evidence in the trace.
+You will NOT see the other referees' final scores. Commit your numbers
+independently, based on the discussion so far and the evidence in the trace.
 
-Respond with ONLY a JSON object matching this structure exactly \
-— no markdown, no extra text, no different field names:
+Respond with ONLY a JSON object matching this structure exactly. No
+markdown, no extra text, no different field names:
 {
   "scores": {
     "relevance":     {"score": <1-5>, "comment": "<justification>"},
@@ -90,7 +90,7 @@ class DebateConfig:
     """Top-level configuration for a multi-role debate."""
 
     roles: list[RoleConfig]
-    num_rounds: int = 2   # 1 free-discussion round + 1 final-scoring round
+    num_rounds: int = 3   # (num_rounds - 1) discussion rounds + 1 final-scoring round
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE
     final_prompt: str = DEFAULT_FINAL_PROMPT
 
@@ -102,11 +102,12 @@ _CRITIC = RoleConfig(
     name="Critic",
     temperature=0.2,
     role_description=(
-        "You are the Critic, a strict and rigorous referee on this panel. "
-        "Your job is to actively look for failures, inefficiencies, incorrect "
-        "tool usage, and weak reasoning in the agent's trace. Do not give the "
-        "benefit of the doubt: penalize mistakes clearly and challenge claims "
-        "that are not supported by evidence in the trace."
+        "You are the Critic, the panel's authority on process rigor and "
+        "EFFICIENCY. Score all five criteria, but bring special scrutiny to "
+        "whether the agent's actions were efficient and well-ordered, without "
+        "redundant or wasted steps. Across every criterion, actively look for "
+        "failures, unsupported claims, and weak reasoning — do not give the "
+        "benefit of the doubt."
     ),
 )
 
@@ -114,12 +115,14 @@ _NETWORK_ENGINEER = RoleConfig(
     name="Network Engineer",
     temperature=0.2,
     role_description=(
-        "You are the Network Engineer, a domain expert on this referee panel. "
-        "Focus on technical correctness: are the diagnostic commands and tool "
-        "calls appropriate for the symptoms? Are network outputs interpreted "
-        "correctly? Does the agent's reasoning reflect sound networking "
-        "knowledge (routing, interfaces, protocols, topology)? Bring "
-        "domain-specific evidence to your judgement."
+        "You are the Network Engineer, the panel's authority on technical "
+        "soundness — RELEVANCE and CORRECTNESS — and co-authority with the "
+        "General Operator on the FINAL OUTCOME (does the diagnosis technically "
+        "match the ground truth?). Score all five criteria, but bring deep "
+        "domain expertise to whether the diagnostic commands were appropriate "
+        "to the symptoms, whether network outputs were interpreted correctly, "
+        "and whether the reasoning reflects sound networking knowledge "
+        "(routing, interfaces, protocols, topology)."
     ),
 )
 
@@ -127,16 +130,29 @@ _GENERAL_OPERATOR = RoleConfig(
     name="General Operator",
     temperature=0.2,
     role_description=(
-        "You are the General Operator, a pragmatic network operations referee. "
-        "Focus on the operational value of the agent's run: is the final "
-        "submission actionable? Is the root cause identification clear and "
-        "useful for an on-call engineer? Reward partial progress and clear "
-        "communication; penalize vague or unusable conclusions."
+        "You are the General Operator, the panel's authority on operational "
+        "value: CLARITY and (jointly with the Network Engineer) FINAL OUTCOME. "
+        "Score all five criteria, but focus "
+        "your expertise on whether the final submission is clear, actionable, "
+        "and useful to an on-call engineer, rewarding partial progress and "
+        "clear communication while penalizing vague or unusable conclusions."
     ),
 )
 
 
+# Per-criterion competence weights used by the aggregator to compute a
+# WEIGHTED panel mean. Each row sums to 1.0. A role's vote counts most on the
+# criteria it is the panel authority for (see role_description above). 
+COMPETENCE_WEIGHTS: dict[str, dict[str, float]] = {
+    "relevance":     {"Critic": 0.2, "Network Engineer": 0.6, "General Operator": 0.2},
+    "correctness":   {"Critic": 0.2, "Network Engineer": 0.6, "General Operator": 0.2},
+    "efficiency":    {"Critic": 0.6, "Network Engineer": 0.2, "General Operator": 0.2},
+    "clarity":       {"Critic": 0.2, "Network Engineer": 0.2, "General Operator": 0.6},
+    "final_outcome": {"Critic": 0.2, "Network Engineer": 0.4, "General Operator": 0.4},
+}
+
+
 DEFAULT_DEBATE_CONFIG = DebateConfig(
     roles=[_CRITIC, _NETWORK_ENGINEER, _GENERAL_OPERATOR],
-    num_rounds=2,  # 1 free-discussion round + 1 final-scoring round
+    num_rounds=3,  # 2 free-discussion rounds + 1 final (blind) scoring round
 )

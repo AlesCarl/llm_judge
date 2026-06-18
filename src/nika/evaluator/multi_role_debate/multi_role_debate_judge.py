@@ -168,7 +168,11 @@ class MultiRoleDebateJudge(BaseJudge):
 
             for i, (role, debater) in enumerate(zip(roles, debaters)):
 
-                # 1. Inject peer statements not yet seen by this debater
+                # 1. Inject peer statements not yet seen by this debater.
+                #    Blind scoring (A1): in the final round we still inject the
+                #    previous discussion round's statements (the arguments), but
+                #    NOT the current round's peer statements (their scores), so
+                #    each debater commits its numbers without seeing the others'.
                 self._inject_pending_peers(
                     debater=debater,
                     roles=roles,
@@ -176,6 +180,7 @@ class MultiRoleDebateJudge(BaseJudge):
                     round_statements=round_statements,
                     self_idx=i,
                     round_idx=round_idx,
+                    inject_current_round=not is_final,
                 )
 
 
@@ -231,21 +236,29 @@ class MultiRoleDebateJudge(BaseJudge):
         round_statements: list[str],
         self_idx: int,
         round_idx: int,
+        inject_current_round: bool = True,
     ) -> None:
         """Append every peer statement that's new to `debater`.
 
         - Round 0: peers with index < self_idx in the current round.
-        - Round r>0: peers with index >= self_idx from round r-1 (they
+        - Round r>0: peers with index > self_idx from round r-1 (they
           spoke AFTER this debater's last turn in round r-1), then
           peers with index < self_idx from the current round.
+
+        If `inject_current_round` is False, the current-round peer
+        statements are NOT injected (blind scoring for the final round):
+        the debater still receives the previous round's discussion but
+        none of the current round's peers — used so the final scores are
+        committed without seeing the other referees' numbers.
         """
         if round_idx > 0:
             prev_round = statements[round_idx - 1]
-            for j in range(self_idx, len(roles)):
+            for j in range(self_idx + 1, len(roles)):
                 debater.add_peer_message(roles[j].name, prev_round[j])
 
-        for j in range(self_idx):
-            debater.add_peer_message(roles[j].name, round_statements[j])
+        if inject_current_round:
+            for j in range(self_idx):
+                debater.add_peer_message(roles[j].name, round_statements[j])
 
 
     ### transcript
