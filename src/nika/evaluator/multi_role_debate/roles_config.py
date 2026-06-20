@@ -21,6 +21,8 @@ from agent.utils.template import CRITERIA_RUBRIC
 #   ${trace}           — parsed agent action trace
 #   ${role_description}— persona of the current debater
 #   ${agent_name}      — name of the current debater
+#   ${discussion_prompt}— score-free discussion instruction; set in the
+#                        discussion rounds, empty in the final round
 #   ${final_prompt}    — empty during debate rounds, set to the scoring
 #                        instruction in the final round
 
@@ -45,7 +47,23 @@ ${role_description}
 
 Now it's your turn to speak, ${agent_name}. Keep it short and focused.
 
+${discussion_prompt}
 ${final_prompt}
+"""
+
+
+# Instruction injected ONLY in the discussion rounds: keep them score-free so
+# the panel exchanges arguments without anchoring on each other's numbers.
+# Numbers are committed for the first time in the final (blind) round — this is
+# the precondition that makes A1 (blind final scoring) actually effective.
+
+DEFAULT_DISCUSSION_PROMPT = """\
+This is a DISCUSSION round, not a scoring round. Do NOT assign any numeric
+scores, ratings, or "X/5" values yet — not even provisional ones. Argue
+qualitatively: cite specific evidence from the trace, say where the agent did
+well or badly on each criterion, and engage with the other referees' arguments
+(agree, push back, or build on them). You will commit your own numeric scores
+privately and independently only in the final round.
 """
 
 
@@ -92,6 +110,7 @@ class DebateConfig:
     roles: list[RoleConfig]
     num_rounds: int = 3   # (num_rounds - 1) discussion rounds + 1 final-scoring round
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE
+    discussion_prompt: str = DEFAULT_DISCUSSION_PROMPT
     final_prompt: str = DEFAULT_FINAL_PROMPT
 
 

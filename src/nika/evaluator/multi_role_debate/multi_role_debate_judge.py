@@ -43,6 +43,7 @@ The other referees have spoken (their statements are visible above).
 Consider their points: refine, defend, or update your position based on
 the evidence in the trace. Keep it short and focused, ${agent_name}.
 
+${discussion_prompt}
 ${final_prompt}
 """
 
@@ -100,25 +101,46 @@ class MultiRoleDebateJudge(BaseJudge):
     ### prompts
 
     def _initial_user_prompt(
-        self, role: RoleConfig, ground_truth: str, trace: str
+        self, role: RoleConfig, ground_truth: str, trace: str, is_final: bool
     ) -> str:
-        """Build the round-1 user message (full template, empty final_prompt)."""
+        """Build the round-1 user message (full template).
+
+        In a normal (>=2 round) debate round 1 is a discussion round, so the
+        score-free discussion instruction is injected and the final-scoring
+        instruction is empty. The is_final branch only matters for the
+        degenerate num_rounds==1 config (round 1 is also the scoring round).
+        """
+        final_prompt = (
+            (role.final_prompt or self.config.final_prompt) if is_final else ""
+        )
+        discussion_prompt = "" if is_final else self.config.discussion_prompt
         return Template(self.config.prompt_template).safe_substitute(
             ground_truth=ground_truth,
             trace=trace,
             role_description=role.role_description,
             agent_name=role.name,
-            final_prompt="",
+            discussion_prompt=discussion_prompt,
+            final_prompt=final_prompt,
         )
 
 
     def _continuation_prompt(self, role: RoleConfig, is_final: bool) -> str:
-        """Build the per-turn message for rounds 2..N (short)."""
+        """Build the per-turn message for rounds 2..N (short).
+
+        Discussion rounds get the score-free discussion instruction; the final
+        round gets the structured-scoring instruction instead. The two are
+        mutually exclusive so numbers are committed for the first time only in
+        the final round.
+        """
         final_prompt = ""
+        discussion_prompt = ""
         if is_final:
             final_prompt = role.final_prompt or self.config.final_prompt
+        else:
+            discussion_prompt = self.config.discussion_prompt
         return Template(_CONTINUATION_PROMPT).safe_substitute(
             agent_name=role.name,
+            discussion_prompt=discussion_prompt,
             final_prompt=final_prompt,
         )
     
@@ -168,11 +190,6 @@ class MultiRoleDebateJudge(BaseJudge):
 
             for i, (role, debater) in enumerate(zip(roles, debaters)):
 
-                # 1. Inject peer statements not yet seen by this debater.
-                #    Blind scoring (A1): in the final round we still inject the
-                #    previous discussion round's statements (the arguments), but
-                #    NOT the current round's peer statements (their scores), so
-                #    each debater commits its numbers without seeing the others'.
                 self._inject_pending_peers(
                     debater=debater,
                     roles=roles,
@@ -183,19 +200,17 @@ class MultiRoleDebateJudge(BaseJudge):
                     inject_current_round=not is_final,
                 )
 
-
                 # 2. Add the task prompt (round 1) or continuation prompt (round 2+)
                 if round_idx == 0:
-                    user_msg = self._initial_user_prompt(role, ground_truth, trace)
+                    user_msg = self._initial_user_prompt(
+                        role, ground_truth, trace, is_final=is_final
+                    )
                 else:
                     user_msg = self._continuation_prompt(role, is_final=is_final)
                 debater.add_user_message(user_msg)
 
 
                 # 3** . Switch to structured output for the final round.
-                #if is_final:
-                #    debater.use_structured_output(DebaterResponse)
-
                 if is_final:
                     debater.llm = load_model(
                         llm_backend=self.judge_llm_backend,
@@ -245,11 +260,6 @@ class MultiRoleDebateJudge(BaseJudge):
           spoke AFTER this debater's last turn in round r-1), then
           peers with index < self_idx from the current round.
 
-        If `inject_current_round` is False, the current-round peer
-        statements are NOT injected (blind scoring for the final round):
-        the debater still receives the previous round's discussion but
-        none of the current round's peers — used so the final scores are
-        committed without seeing the other referees' numbers.
         """
         if round_idx > 0:
             prev_round = statements[round_idx - 1]
