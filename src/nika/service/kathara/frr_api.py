@@ -112,10 +112,8 @@ class FRRAPIMixin:
         asn_result = self.exec_cmd(device_name, command)
         match = re.search(r"local AS number\s+(\d+)", asn_result)
         if match:
-            as_number = int(match.group(1))
-        else:
-            print("Could not find AS number in BGP summary output")
-        return as_number
+            return int(match.group(1))
+        raise ValueError(f"Could not find AS number in BGP summary output for {device_name}: {asn_result!r}")
 
 
 class KatharaFRRAPI(KatharaBaseAPI, FRRAPIMixin):

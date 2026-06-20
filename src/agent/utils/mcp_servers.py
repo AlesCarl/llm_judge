@@ -1,15 +1,54 @@
 import os
 
-from nika.utils.session import Session
+from nika.config import MCP_SERVER_DIR
+
+# Keyword sets that trigger inclusion of each optional Kathara MCP server.
+_FRR_KEYWORDS = frozenset({"bgp", "ospf", "rip", "frr", "routing"})
+_BMV2_KEYWORDS = frozenset({"p4", "bmv2", "sdn", "bloom", "mpls", "int", "counter"})
+_TELEMETRY_KEYWORDS = frozenset({"telemetry"})
+
+
+def select_diagnosis_servers(scenario_name: str, problem_names: list[str]) -> list[str]:
+    """Return the minimal set of Kathara MCP server names needed for *scenario*.
+
+    ``kathara_base_mcp_server`` is always included.  The three specialised
+    servers are added when keyword signals appear in the scenario or problem
+    names (tokens are split on ``_`` and ``-``).
+
+    Parameters
+    ----------
+    scenario_name:
+        E.g. ``"dc_clos_bgp"`` or ``"p4_counter"``.
+    problem_names:
+        E.g. ``["bgp_session_down"]``.
+    """
+    combined = (scenario_name + " " + " ".join(problem_names)).lower()
+    tokens = set(combined.replace("_", " ").replace("-", " ").split())
+
+    servers = ["kathara_base_mcp_server"]
+    if tokens & _FRR_KEYWORDS:
+        servers.append("kathara_frr_mcp_server")
+    if tokens & _BMV2_KEYWORDS:
+        servers.append("kathara_bmv2_mcp_server")
+    if tokens & _TELEMETRY_KEYWORDS:
+        servers.append("kathara_telemetry_mcp_server")
+    return servers
 
 
 class MCPServerConfig:
-    def __init__(self):
-        # load paths
-        base_dir = os.getenv("BASE_DIR")
-        self.mcp_server_dir = os.path.join(base_dir, "src/nika/service/mcp_server")
-        self.session = Session()
-        self.session.load_running_session(session_id=os.getenv("NIKA_SESSION_ID"))
+    def __init__(self, session_id: str):
+        if not session_id:
+            raise ValueError("session_id is required to start MCP servers.")
+        self.mcp_server_dir = str(MCP_SERVER_DIR)
+        self.session_id = session_id
+
+    def _server_env(self) -> dict[str, str]:
+        return {
+            # inherit USER/HOME/PATH so the MCP subprocess keeps the 'ubuntu'
+            # identity (otherwise the agent goes blind / sees 0 hosts).
+            **os.environ,
+            "NIKA_SESSION_ID": self.session_id,
+        }
 
     def load_config(self, if_submit: bool = False) -> dict:
         if if_submit:
@@ -44,15 +83,16 @@ class MCPServerConfig:
                 },
             }
 
-        # add env to every server for the submission
         for server in config.values():
-            server["env"] = {
-                **os.environ,  # inherit USER/HOME/PATH so the MCP subprocess keeps the 'ubuntu' identity 
-                "LAB_SESSION_ID": self.session.session_id,
-                "root_cause_name": self.session.root_cause_name,
-                #"LAB_NAME": self.session.scenario_name,
-                "LAB_NAME": self.session.lab_name,
-                "model": self.session.model,
-                "agent_type": self.session.agent_type,
-            }
+            server["env"] = self._server_env()
         return config
+
+    def load_filtered_config(self, server_names: list[str]) -> dict:
+        """Diagnosis config restricted to *server_names*.
+
+        Useful when only a subset of Kathara MCP servers is relevant for a
+        given scenario (e.g. skip bmv2 tools for a pure routing problem).
+        Unknown names in *server_names* are silently ignored.
+        """
+        full = self.load_config(if_submit=False)
+        return {k: v for k, v in full.items() if k in server_names}

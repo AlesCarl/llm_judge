@@ -3,7 +3,7 @@ import os
 from Kathara.manager.Kathara import Kathara
 from Kathara.model.Lab import Lab
 
-from nika.config import BASE_DIR
+from nika.config import pkg_path
 from nika.net_env.base import NetworkEnvBase
 
 cur_path = os.path.dirname(os.path.abspath(__file__))
@@ -13,14 +13,14 @@ class P4Counter(NetworkEnvBase):
     LAB_NAME = "p4_counter"
     TOPO_LEVEL = "easy"
     TOPO_SIZE = None
-    TAGS = ["link", "host", "p4", "mac", "arp", "icmp"]
+    TAGS = ["link", "pc", "p4", "mac", "arp", "icmp"]
 
     def __init__(self, **kwargs):
         super().__init__()
         self.lab = Lab(self.LAB_NAME)
         self.name = self.LAB_NAME
         self.instance = Kathara.get_instance()
-        self.desc = "A simple network with 4 bmv2 switches and 3 hosts."
+        self.desc = "A simple network with 4 bmv2 switches and 3 pcs."
 
         pc1 = self.lab.new_machine("pc1", **{"image": "kathara/base"})
         pc2 = self.lab.new_machine("pc2", **{"image": "kathara/base"})
@@ -80,11 +80,11 @@ class P4Counter(NetworkEnvBase):
 
             # add the sswitch_thrift_API.py file to the Kathara image
             s_i.create_file_from_path(
-                os.path.join(BASE_DIR, "src/nika/net_env/utils/p4/sswitch_thrift_API.py"),
+                str(pkg_path("net_env/utils/p4/sswitch_thrift_API.py")),
                 "/usr/local/lib/python3.11/site-packages/sswitch_thrift_API.py",
             )
             s_i.create_file_from_path(
-                os.path.join(BASE_DIR, "src/nika/net_env/utils/p4/thrift_API.py"),
+                str(pkg_path("net_env/utils/p4/thrift_API.py")),
                 "/usr/local/lib/python3.11/site-packages/thrift_API.py",
             )
 

@@ -15,3 +15,5 @@ tmp/
 /figs/
 notebooks/
 uv.lock
+.agents/
+.cursor/

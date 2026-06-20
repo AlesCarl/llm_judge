@@ -25,9 +25,12 @@ This repository is a unified platform that can offer:
 ## Features
 
 - Standardized network troubleshooting environment based on Kathará
+- Unified `nika` CLI for env deploy, fault injection, agent runs, and evaluation
+- Session-based workflow with multi-session support (`nika session`, `--session-id`)
+- Parameterized fault injection (`nika failure describe`, `--set key=value`)
 - MCP-based tool support
 - Pre-built network scenarios and fault injection mechanisms
-- Reproducible evaluation framework
+- Reproducible evaluation framework with batch summary (`nika eval summary`)
 - Support for various network topologies and configurations
 - Easy integration of custom AI agents
 - Automatic evaluation mechanism
@@ -55,7 +58,7 @@ cd nika
 uv sync
 
 # Activate the environment
-uv venv activate
+source .venv/bin/activate
 ```
 
 The Kathará API relies on Docker to function properly. We recommend to add current user to docker group to avoid calling with `sudo`. **However, please be aware of the security implications of this action.**
@@ -86,9 +89,9 @@ LANGSMITH_PROJECT=<>
 
 # if use langfuse for observability
 # check langfuse documentation for more details
-LANGFUSE_SECRET_KEY = <>
-LANGFUSE_PUBLIC_KEY = <>
-LANGFUSE_BASE_URL = "https://cloud.langfuse.com"
+LANGFUSE_SECRET_KEY=<>
+LANGFUSE_PUBLIC_KEY=<>
+LANGFUSE_HOST="https://cloud.langfuse.com"
 
 # api key for you LLM, e.g. DeepSeek here
 DEEPSEEK_API_KEY=<>
@@ -101,45 +104,78 @@ OLLAMA_API_URL=<>
 ## Step by step guide
 You can follow the steps below to run a complete troubleshooting task with NIKA. Use the `nika` CLI.
 
+Each `nika env run` creates a **session** (printed as `session_id=…`). Session state lives under `runtime/sessions/` and tracks the deployed lab, injected failures, and agent activity. When only one session is running, most commands auto-select it; pass `--session-id` when several sessions are active.
+
 1. **List scenarios and start the network environment**
 
    ```shell
    nika env list
    nika env run <scenario>                    # scenarios without topology tiers (e.g. simple_bgp)
    nika env run <scenario> -t s             # scalable scenarios (tier: s, m, or l)
+   nika env ps                                # running lab instances (grouped by deployed env)
    ```
 
-2. **List problems and inject faults**
+2. **Inspect and manage sessions**
+
+   ```shell
+   nika session ps                            # running sessions (status, failures, agents)
+   nika session ps -a                         # include finished sessions
+   nika session inspect [SESSION_ID]          # full session JSON + failure summary
+   nika session close [SESSION_ID]            # undeploy lab and clear runtime state
+   nika session close all -y                  # close every running session
+   ```
+
+3. **List problems and inject faults**
 
    ```shell
    nika failure list
+   nika failure describe <problem_id>         # parameter schema and usage hints
    nika failure inject <problem_id> [<problem_id> ...]
+   nika failure inject link_down --set host_name=pc1 --set intf_name=eth0
+   nika failure ps [--session-id ID]          # persisted injection records
    ```
 
-3. **List agent options and run the agent**
+4. **Run commands inside a lab host** (optional debugging)
+
+   ```shell
+   nika exec pc1 ip addr show
+   nika exec pc1 ping -c 3 10.0.0.2 --timeout 30
+   ```
+
+5. **List agent options and run the agent**
 
    ```shell
    nika agent list
-   nika agent run -a react -b openai -m gpt-5-mini -n 20
+   nika agent run -a react -b openai -m gpt-5-mini -n 20   # LangGraph + LangChain ReAct
+   nika agent run -a cli -m gpt-5.4-mini                    # Codex CLI subprocess worker
+   nika agent run -a cli -m gpt-5.4-mini -e medium        # optional Codex reasoning effort
+   nika agent run -a mock -n 5                             # no LLM; useful for pipeline testing
    ```
 
-4. **Evaluate the run** (numeric metrics, LLM judge, and CSV publish are separate; run any subset, then publish when you want one summary row and teardown)
+   See **[Troubleshooting Agents](#troubleshooting-agents)** below for architecture notes and a full walkthrough example.
+
+6. **Close the session, then evaluate the run** (metrics, judge, publish, and CSV summary are separate steps)
 
    ```shell
+   nika session close [SESSION_ID] -y           # undeploy lab and clear runtime state first
    nika eval metrics
    nika eval judge -b openai -m gpt-5-mini
    nika eval publish
+   nika eval summary                              # all finished sessions → default CSV
+   nika eval summary -p link_down -e simple_bgp   # filter by problem and scenario
+   nika eval summary -o results/0_summary/my_run.csv
    ```
 
-Full CLI documentation (benchmark batch mode, traffic types, parameter tables, and conventions) lives in **[src/nika/cli/README.md](src/nika/cli/README.md)**.
+Full CLI documentation (benchmark batch mode, traffic types, parameter tables, and conventions) lives in **[src/nika/codex_cli/README.md](src/nika/codex_cli/README.md)**.
 
 ### Optional: benchmark or traffic from the CLI
 
 ```shell
 nika benchmark run
 nika benchmark run dc_clos_bgp --problem bgp_asn_misconfig -t s
+nika benchmark run --judge --judge-backend openai --judge-model gpt-5-mini
 nika traffic list
-nika traffic run od --all-to-host host_1 --mbps 20 --interval 300 --background
+nika traffic run od --all-to-host pc1 --mbps 20 --interval 300 --background
 ```
 
 ## Run Unit Tests
@@ -157,17 +193,109 @@ uv run --with pytest pytest tests/test_session.py -v
 
 <h1 id="🛠️usage">🛠️ Usage</h1>
 
+## Troubleshooting Agents
+
+Agent implementations live under [`src/agent/`](src/agent/). For architecture, directory layout, and extension notes, see **[src/agent/README.md](src/agent/README.md)**.
+
+NIKA ships two LLM-backed agents for real troubleshooting runs, plus a deterministic mock for CI:
+
+| Agent | CLI flag | How it works | Prerequisites |
+| ----- | -------- | ------------ | ------------- |
+| **ReAct** | `-a react` | LangGraph orchestrates two LangChain ReAct workers (diagnosis → submission) | LLM API key in `.env` (`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or Ollama URL) |
+| **Codex CLI** | `-a cli` | Same two-phase LangGraph flow, but each phase runs `codex exec` as a subprocess with Kathara MCP servers | [Codex CLI](https://developers.openai.com/codex) installed and authenticated (`codex login` or `OPENAI_API_KEY`) |
+| **Mock** | `-a mock` | Fixed tool-call script; no LLM | None |
+
+Both LLM agents (and the mock agent) write structured traces to `results/{session_id}/messages.jsonl` and produce `submission.json` via the task MCP server.
+
+### ReAct agent (`-a react`)
+
+```shell
+nika agent list
+nika agent run -a react -b openai -m gpt-5-mini -n 20
+nika agent run -a react -b deepseek -m deepseek-chat -n 20
+```
+
+- **`-b` / `--backend`**: `openai`, `ollama`, or `deepseek`
+- **`-m` / `--model`**: model id for the chosen backend
+- **`-n` / `--max-steps`**: max ReAct recursion steps per phase
+- Tracing: Langfuse + LangSmith (configure keys in `.env`)
+
+### Codex CLI agent (`-a cli`)
+
+Requires [Codex CLI](https://developers.openai.com/codex); follow the [official installation guide](https://developers.openai.com/codex/quickstart) to install and authenticate.
+
+```shell
+# authenticate once
+codex login
+
+# run on the current session task
+nika agent run -a cli -m gpt-5.4-mini
+```
+
+- Uses `codex exec --json` under the hood; reasoning steps stream to the terminal in real time (MCP tool calls, agent messages, turn progress) and are logged to `messages.jsonl`.
+- The `-b` backend flag is accepted for CLI parity but ignored — Codex always uses OpenAI models.
+- **`-e` / `--reasoning-effort`**: Codex `model_reasoning_effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`).
+- Per-session Codex workspace: `results/{session_id}/codex_workspace/`
+
+See **[src/nika/codex_cli/README.md](src/nika/codex_cli/README.md)** for full `nika agent` flags and conventions.
+
+### Example: `simple_bgp` with `link_down`
+
+End-to-end workflow from lab deploy through agent run and evaluation:
+
+```shell
+# 1. Deploy the network environment (creates a session)
+nika env list
+nika env run simple_bgp
+# → prints session_id=20260613-061340-072e35
+
+# 2. Inspect the fault schema, then inject a link-down on pc1
+nika failure describe link_down
+nika failure inject link_down --set host_name=pc1 --set intf_name=eth0
+
+# 3. (optional) verify the fault from inside the lab
+nika exec pc1 ip link show eth0
+nika exec pc2 ping -c 3 195.11.14.2
+
+# 4. Run a troubleshooting agent on the session task
+# Option A — LangGraph + LangChain ReAct
+nika agent run -a react -b openai -m gpt-5-mini -n 20
+
+# Option B — Codex CLI (streams step-by-step output to the terminal)
+nika agent run -a cli -m gpt-5.4-mini
+
+# 5. Inspect session state and artifacts
+nika session inspect
+ls results/<session_id>/
+# run.json, ground_truth.json, events.jsonl, messages.jsonl, submission.json, codex_workspace/ (cli only)
+
+# 6. Close the lab, then evaluate
+nika session close -y
+nika eval metrics
+nika eval judge -b openai -m gpt-5-mini
+nika eval publish
+```
+
+When multiple sessions are running, pass `--session-id <id>` to `failure inject`, `agent run`, and other session-scoped commands.
+
 ## Network Scenarios
 
-This framework supports multiple network scenarios under the `nika/net_env` directory, including:
+Registered scenarios (see `nika env list`) live under `src/nika/net_env/`:
 
-| Scenario                                 | Scalable | Description                                                        |
-| ---------------------------------------- | -------- | ------------------------------------------------------------------ |
-| Data center network (CLOS)               | ✓        | Multi-tier leaf–spine fabric with edge servers.                    |
-| Campus network (3-tier)                  | ✓        | Enterprise core–distribution–access topology.                      |
-| ISP backbone network (meshed)            | ✓        | Provider-style backbone with core and access nodes.                |
-| SDN-enabled cloud POP fabric (CLOS/star) | ✓        | SDN fabric with centralized controller and edge switches.          |
-| P4 programmable testbed                  | --       | Compact testbed for data-plane algorithms and pipeline validation. |
+| Scenario ID | Scalable | Description |
+| ----------- | -------- | ----------- |
+| `dc_clos_bgp` | ✓ | Multi-tier data center CLOS with EBGP (FRR). |
+| `dc_clos_service` | ✓ | Data center CLOS with DNS/HTTP edge services and external clients. |
+| `ospf_enterprise_static` | ✓ | Enterprise hierarchical OSPF network with static host addressing. |
+| `ospf_enterprise_dhcp` | ✓ | Enterprise OSPF network with DHCP for host addressing. |
+| `rip_small_internet_vpn` | ✓ | Small RIP-based Internet with external zones and WireGuard VPN overlay. |
+| `sdn_clos` | ✓ | Scalable SDN spine–leaf fabric with OpenFlow controller. |
+| `sdn_star` | ✓ | SDN star (hub-and-spoke) topology with OpenFlow controller. |
+| `simple_bgp` | -- | Compact inter-domain BGP lab (two routers, two hosts). |
+| `p4_int` | -- | P4 spine–leaf testbed with In-band Network Telemetry (InfluxDB). |
+| `p4_bloom_filter` | -- | P4 bloom-filter data-plane validation testbed. |
+| `p4_counter` | -- | P4 counter pipeline testbed. |
+| `p4_mpls` | -- | P4 MPLS data-plane testbed. |
 
 
 💡 More scenarios are WIP!
@@ -228,110 +356,53 @@ Based on the above issues, we disclose a large public dataset of AI agents’ be
 
 ## MCP Servers and Tools
 
-This framework provides a set of MCP servers and tools to facilitate network troubleshooting tasks. All servers are available under `src/nika/service/mcp_server`. These include:
+This framework provides MCP servers under `src/nika/service/mcp_server`. These include:
 
-- **base mcp server for Kathará**: This server provides the basic functionality for interacting with Kathará network scenarios, including
-  - `get_reachability` to check the reachability by pinging all pairs of hosts.
-  - `iperf_test` to run iperf test between any two hosts.
-  - `systemctl_ops` to manage system services, i.e., start, stop, restart, status.
-  - `get_host_net_config` to retrieve the network configuration of a specific host.
-  - `nft_list_ruleset` to get the current nftables ruleset.
-- **BMv2 mcp server**: This server provides functionality for interacting with BMv2 switches, including
-  - `bmv2_get_log` to retrieve the log from a BMv2 switch.
-  - `bmv2_get_counter_arrays` to retrieve the counter arrays from a BMv2 switch.
-- **Frr mcp server**: This server provides functionality for interacting with FRRouting (FRR), including
-  - `frr_get_bgp_conf` to retrieve the BGP configuration from a FRR instance.
-  - `frr_get_ospf_conf` to retrieve the OSPF configuration from a FRR instance.
-- **INT mcp server**: This server provides functionality for interacting with INT (In-band Network Telemetry) data stored in InfluxDB, including
-  - `influx_list_buckets` to list all buckets in InfluxDB.
-  - `influx_get_measurements` to retrieve the measurements from a specific bucket in InfluxDB.
-  - `influx_query_measurement` to query data from InfluxDB.
-- **Generic mcp server**: This server provides generic functionalities, including
-  - `google_search` to perform a Google search.
-- **Task management mcp server**: This server provides functionality for managing tasks and submissions, including
-  - `list_avail_problems` to list all available problems for agent to solve.
-  - `get_submission_template` to retrieve the submission template for a specific problem.
-  - `submit` to submit a solution for a specific problem.
+- **Kathará base MCP server** (`kathara_base_mcp_server.py`): host reachability and diagnostics, including
+  - `get_reachability` to ping all pairs of hosts (subset when the lab is large).
+  - `ping_pair` to ping between two specific hosts.
+  - `iperf_test` to run an iperf test between two hosts.
+  - `systemctl_ops` to manage system services (start, stop, restart, status).
+  - `get_host_net_config` to retrieve the network configuration of a host.
+  - `get_tc_statistics`, `netstat`, `ip_addr_statistics`, `ethtool`, `curl_web_test` for interface and service checks.
+  - `cat_file`, `exec_shell`, `exec_shell_dual` to read files or run commands in containers.
+- **BMv2 MCP server** (`kathara_bmv2_mcp_server.py`): P4/BMv2 switch interaction, including
+  - `bmv2_get_log`, `bmv2_get_counter_arrays`, `bmv2_read_p4_program`, `bmv2_counter_read`.
+  - `bmv2_show_tables`, `bmv2_table_dump`, `bmv2_get_register_arrays`, `bmv2_register_read`.
+- **FRR MCP server** (`kathara_frr_mcp_server.py`): FRRouting routers, including
+  - `frr_get_bgp_conf`, `frr_get_ospf_conf`, `frr_show_running_config`, `frr_show_ip_route`, `frr_exec`.
+- **Telemetry MCP server** (`kathara_telemetry_mcp_server.py`): INT/InfluxDB telemetry, including
+  - `influx_list_buckets`, `influx_get_measurements`, `influx_count_measurements`, `influx_query_measurement`.
+- **Task management MCP server** (`task_mcp_server.py`): agent submissions, including
+  - `list_avail_problems` to list injectable root-cause ids.
+  - `submit` to write the agent's final detection/localization/RCA answer.
 
 💡 More tools are coming soon...
 
 You can also plug in your own MCP servers following the configuration instruction. Look for more MCP servers at [mcp.so](https://mcp.so/).
 
-### Plug in the servers to your Claude desktop
-
-#### Windows
-
-Since the network environment and kathará run on Linux, and Claude desktop runs on Windows, we need some tricks here.
-
-1. Modify the `xxx_mcp_server.py` files under `src/nika/service/mcp_server` as follows:
-   
-```python
-mcp = FastMCP(name="kathara_base_mcp_server", host="127.0.0.1", port=8000)
-... # your tools can be kept as is
-mcp.run(transport="sse")
-```
-
-2. Run the server in VSCode terminal, it will automatically forward the port to Windows host, like 8000 -> 8000.
-
-1. Configure Claude's config file `xx/claude_desktop_config.json` as follows:
-
-```json
-{
-  "mcpServers": {
-    "kathara_base": {
-      "command": "npx",
-      "args": [
-        "mcp-remote",
-        "http://127.0.0.1:8000/sse"
-      ]
-    }
-  }
-}
-```
-
-4. Enjoy!
 
 
 ## Logging and Observability
 
-This framework supports to log and monitor agents with Langfuse, Laminar, and LangSmith, check [Langchain Callbacks](https://python.langchain.com/docs/concepts/callbacks/) for details.
+The built-in ReAct agent (`react`) traces runs with **Langfuse** (LangChain `CallbackHandler`) and **LangSmith** (`langsmith.tracing_context`). The Codex CLI agent (`cli`) streams `codex exec --json` events to the terminal and logs them to `messages.jsonl` in real time. Configure observability keys in `.env` as shown above. See [LangChain Callbacks](https://python.langchain.com/docs/concepts/callbacks/) for callback details.
+
+Each session directory under `results/{session_id}/` also contains:
+
+- **`events.jsonl`**: pipeline/system events from `nika.utils.logger` (env deploy, fault inject, agent start/end, eval).
+- **`messages.jsonl`**: agent conversation and tool traces from `src/agent/utils/loggers.py`.
 
 ### Customized Logger
 
-This framework allows users to implement customized logging solutions tailored to their specific needs. This can be achieved by plugging the callback function to `mcp_use.MCPAgent`. For example, 
+Agent message logging is built on `MessageLogger` in `src/agent/utils/loggers.py`, which writes structured JSONL to `{session_dir}/messages.jsonl`. The LangGraph ReAct path wraps it with `AgentCallbackLogger` (a LangChain `BaseCallbackHandler`); the Codex CLI path calls `MessageLogger` directly from `CodexWorker`. To extend the ReAct path:
 
 ```python
-from langchain.callbacks.base import BaseCallbackHandler
+from agent.utils.loggers import AgentCallbackLogger
 
-class FileLoggerHandler(BaseCallbackHandler):
-    def __init__(self):
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-        file_handler = logging.FileHandler("mcp_use.log", encoding="utf-8")
-        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-
-    def on_llm_start(self, **kwargs):
-        ...
-
-    def on_llm_end(self, **kwargs):
-        ...
-
-    def on_tool_start(self,  **kwargs):
-        ...
-
-    def on_tool_end(self, **kwargs):
-        ...
-
-agent = MCPAgent(
-    llm=llm,
-    client=client,
-    max_steps=max_steps,
-    system_prompt_template=system_prompt_template,
-    verbose=True,
-    callbacks=[FileLoggerHandler()],
+callback = AgentCallbackLogger(agent="diagnosis_agent", session_dir=session_dir)
+result = await agent.ainvoke(
+    {"messages": messages},
+    config={"callbacks": [callback]},
 )
 ```
 

@@ -1,18 +1,28 @@
 import random
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from nika.generator.fault.injector_host import FaultInjectorHost
 from nika.generator.fault.injector_tc import FaultInjectorTC
 from nika.net_env.net_env_pool import get_net_env_instance
-from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel
+from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel, build_verify_result
 from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaAPIALL
-from nika.utils.failure_params import FailureParamField, FailureParamSchema
 
 # ==================================================================
 # Problem: Web service experiencing high DNS lookup latency causing performance degradation.
 # ==================================================================
+
+
+class DNSLookupLatencyParams(BaseModel):
+    """Parameters for injecting a DNS lookup latency fault."""
+
+    host_name: Optional[str] = Field(default=None, description="Target DNS server host name. Defaults to runtime selection.")
+    intf_name: str = Field(default="eth0", description="Interface name.")
+    delay_ms: int = Field(default=1000, description="Delay in milliseconds.")
 
 
 class DNSLookupLatencyBase:
@@ -20,16 +30,8 @@ class DNSLookupLatencyBase:
     root_cause_name: str = "dns_lookup_latency"
     symptom_desc: str = "Users experience high latency when accessing web services."
     TAGS: str = ["dns", "http"]
-    FAILURE_PARAM_SCHEMA = FailureParamSchema(
-        problem_name="dns_lookup_latency",
-        summary="Inject DNS lookup latency by adding delay on DNS server interface.",
-        fields=(
-            FailureParamField("host_name", "str", "Target DNS server host name."),
-            FailureParamField("intf_name", "str", "Interface name.", default="eth0"),
-            FailureParamField("delay_ms", "int", "Delay in milliseconds.", default=1000),
-        ),
-        example="nika failure inject dns_lookup_latency --set host_name=dns0 --set delay_ms=1000",
-    )
+
+    Params = DNSLookupLatencyParams
 
     def __init__(self, scenario_name: str = "dc_clos_service", **kwargs):
         super().__init__()
@@ -40,8 +42,27 @@ class DNSLookupLatencyBase:
         self.intf_name = "eth0"
         self.delay_ms = 1000
 
-    def inject_fault(self):
-        self.injector.inject_delay(host_name=self.faulty_devices[0], intf_name=self.intf_name, delay_ms=self.delay_ms)
+    def inject_fault(self, params: DNSLookupLatencyParams | None = None):
+        if params is None:
+            params = DNSLookupLatencyParams()
+        host = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        self.injector.inject_delay(host_name=host, intf_name=params.intf_name, delay_ms=params.delay_ms)
+
+    def verify_fault(self, params: DNSLookupLatencyParams | None = None) -> dict:
+        """Verify tc qdisc on DNS server interface has a delay configured."""
+        if params is None:
+            params = DNSLookupLatencyParams()
+        host = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        intf = params.intf_name
+        tc_output = self.kathara_api.exec_cmd(host, f"tc qdisc show dev {intf}").strip()
+        verified = "delay" in tc_output
+        return build_verify_result(
+            root_cause_name=self.root_cause_name,
+            faulty_devices=self.faulty_devices,
+            verified=verified,
+            details={"host": host, "intf": intf, "tc_output": tc_output},
+        )
+
 
 class DNSLookupLatencyDetection(DNSLookupLatencyBase, DetectionTask):
     META = ProblemMeta(
@@ -75,19 +96,19 @@ class DNSLookupLatencyRCA(DNSLookupLatencyBase, RCATask):
 # ==================================================================
 
 
+class LoadBalancerOverloadParams(BaseModel):
+    """Parameters for injecting a load balancer overload fault."""
+
+    host_name: Optional[str] = Field(default=None, description="Target load balancer host name. Defaults to runtime selection.")
+    duration: int = Field(default=300, description="Stress duration in seconds.")
+
+
 class LoadBalancerOverloadBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "load_balancer_overload"
     TAGS: str = ["load_balancer", "http"]
-    FAILURE_PARAM_SCHEMA = FailureParamSchema(
-        problem_name="load_balancer_overload",
-        summary="Stress load balancer host resources.",
-        fields=(
-            FailureParamField("host_name", "str", "Target load balancer host name."),
-            FailureParamField("duration", "int", "Stress duration in seconds.", default=300),
-        ),
-        example="nika failure inject load_balancer_overload --set host_name=lb0 --set duration=300",
-    )
+
+    Params = LoadBalancerOverloadParams
 
     def __init__(self, scenario_name: str = "load_balancer", **kwargs):
         super().__init__()
@@ -97,8 +118,26 @@ class LoadBalancerOverloadBase:
         self.faulty_devices = [random.choice(self.net_env.servers["load_balancer"])]
         self.duration = 300
 
-    def inject_fault(self):
-        self.injector.inject_stress_all(host_name=self.faulty_devices[0], duration=self.duration)
+    def inject_fault(self, params: LoadBalancerOverloadParams | None = None):
+        if params is None:
+            params = LoadBalancerOverloadParams()
+        host = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        self.injector.inject_stress_all(host_name=host, duration=params.duration)
+
+    def verify_fault(self, params: LoadBalancerOverloadParams | None = None) -> dict:
+        """Verify stress-ng is running on the load balancer."""
+        if params is None:
+            params = LoadBalancerOverloadParams()
+        host = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        pgrep_output = self.kathara_api.exec_cmd(host, "pgrep -a stress-ng 2>/dev/null || echo NONE").strip()
+        verified = "stress-ng" in pgrep_output and pgrep_output != "NONE"
+        return build_verify_result(
+            root_cause_name=self.root_cause_name,
+            faulty_devices=self.faulty_devices,
+            verified=verified,
+            details={"host": host, "pgrep_output": pgrep_output},
+        )
+
 
 class LoadBalancerOverloadDetection(LoadBalancerOverloadBase, DetectionTask):
     META = ProblemMeta(
@@ -128,6 +167,5 @@ class LoadBalancerOverloadRCA(LoadBalancerOverloadBase, RCATask):
 
 
 if __name__ == "__main__":
-    # Test the fault injection and recovery
     problem = LoadBalancerOverloadBase()
     problem.inject_fault()

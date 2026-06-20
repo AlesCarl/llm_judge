@@ -37,12 +37,12 @@ def _register_problems():
         except Exception as e:
             logger.warning(f"Failed to inspect members of {root_cause_category_name}: {e}")
             continue
-        # Register each problem class
+        # Register each concrete problem task class (Detection / Localization / RCA).
         for cls_name, cls_obj in members:
             if cls_obj.__module__ != module.__name__:
                 continue
 
-            if "base" in cls_name.lower():
+            if not (inspect.isclass(cls_obj) and issubclass(cls_obj, TaskBase) and cls_obj is not TaskBase):
                 continue
 
             try:
@@ -77,6 +77,11 @@ def list_avail_tags() -> list[str]:
         for problem_class in problem_classes.values():
             tags.update(problem_class.TAGS)
     return list(tags)
+
+
+def get_problem_class(problem_name: str, task_level: TaskLevel) -> Type[TaskBase] | None:
+    """Return the registered class for *problem_name* at *task_level*, or None."""
+    return _PROBLEMS.get(problem_name, {}).get(task_level)
 
 
 def get_problem_instance(problem_names: list, task_level: TaskLevel, scenario_name: str, **kwargs) -> TaskBase:

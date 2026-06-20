@@ -40,7 +40,7 @@ class SDNClos(NetworkEnvBase):
     LAB_NAME = "sdn_clos"
     TOPO_LEVEL = "medium"
     TOPO_SIZE = ["s", "m", "l"]
-    TAGS = ["link", "sdn", "host", "mac", "arp", "icmp"]
+    TAGS = ["link", "sdn", "pc", "mac", "arp", "icmp"]
 
     def __init__(self, topo_size: Literal["s", "m", "l"] = "s"):
         super().__init__()
@@ -102,7 +102,7 @@ class SDNClos(NetworkEnvBase):
         tot_host_list = []
         for leaf_id in range(LEAF_NUM):
             for host_id in range(HOST_PER_LEAF):
-                host_name = f"host_{leaf_id + 1}_{host_id + 1}"
+                host_name = f"pc_{leaf_id + 1}_{host_id + 1}"
                 host_machine = self.lab.new_machine(
                     host_name, **{"image": "kathara/nika-base", "cpus": 0.5, "mem": "256m"}
                 )
@@ -115,8 +115,8 @@ class SDNClos(NetworkEnvBase):
                 tot_host_list.append(host_meta)
 
         # ---------- Controller ----------
-        controller = self.lab.new_machine(
-            "controller", **{"image": "kathara/nika-ryu", "cpus": 0.5, "mem": "256m", "bridged": True}
+        controller = self.lab.new_machine(  
+            "controller", **{"image": "kathara/nika-pox", "cpus": 0.5, "mem": "256m", "bridged": True}
         )
 
         # ---------- Switch initialize ----------
@@ -130,7 +130,7 @@ class SDNClos(NetworkEnvBase):
         host_pool = host_network.hosts()
         for leaf_idx, leaf_switch in enumerate(leaf_switches, start=1):
             # find hosts belong to this leaf
-            leaf_hosts = [h for h in tot_host_list if h.name.startswith(f"host_{leaf_idx}_")]
+            leaf_hosts = [h for h in tot_host_list if h.name.startswith(f"pc_{leaf_idx}_")]
 
             for host_meta in leaf_hosts:
                 link_name = f"{host_meta.name}_{leaf_switch.name}"
@@ -189,7 +189,7 @@ class SDNClos(NetworkEnvBase):
             [
                 "ip addr add 20.0.0.100/24 dev eth0",
                 "ip link set eth0 up",
-                "ryu-manager ryu.app.simple_switch &",
+                "python3 /pox/pox.py forwarding.l2_learning &",
             ],
             f"{controller.name}.startup",
         )

@@ -3,7 +3,7 @@ import os
 from Kathara.manager.Kathara import Kathara
 from Kathara.model.Lab import Lab
 
-from nika.config import BASE_DIR
+from nika.config import pkg_path
 from nika.net_env.base import NetworkEnvBase
 
 cur_path = os.path.dirname(os.path.abspath(__file__))
@@ -13,7 +13,7 @@ class P4_MPLS(NetworkEnvBase):
     LAB_NAME = "p4_mpls"
     TOPO_LEVEL = "medium"
     TOPO_SIZE = None
-    TAGS = ["link", "host", "p4", "mac", "arp", "icmp", "mpls"]
+    TAGS = ["link", "pc", "p4", "mac", "arp", "icmp", "mpls"]
 
     def _add_link(self, device_a: str, device_b: str):
         self.lab.connect_machine_to_link(device_a, f"{device_a}_to_{device_b}")
@@ -26,9 +26,9 @@ class P4_MPLS(NetworkEnvBase):
         self.instance = Kathara.get_instance()
         self.desc = "A MPLS network using Bmv2 switches"
 
-        host_1 = self.lab.new_machine("host_1", **{"image": "kathara/base"})
-        host_2 = self.lab.new_machine("host_2", **{"image": "kathara/base"})
-        host_3 = self.lab.new_machine("host_3", **{"image": "kathara/base"})
+        pc1 = self.lab.new_machine("pc1", **{"image": "kathara/base"})
+        pc2 = self.lab.new_machine("pc2", **{"image": "kathara/base"})
+        pc3 = self.lab.new_machine("pc3", **{"image": "kathara/base"})
 
         switches = {}
         for i in range(1, 8):
@@ -38,7 +38,7 @@ class P4_MPLS(NetworkEnvBase):
             )
             switches[f"switch_{i}"] = switch
 
-        self._add_link(host_1.name, "switch_1")
+        self._add_link(pc1.name, "switch_1")
         self._add_link("switch_1", "switch_2")
         self._add_link("switch_1", "switch_3")
         self._add_link("switch_2", "switch_4")
@@ -47,14 +47,14 @@ class P4_MPLS(NetworkEnvBase):
         self._add_link("switch_4", "switch_6")
         self._add_link("switch_5", "switch_7")
         self._add_link("switch_6", "switch_7")
-        self._add_link("switch_7", host_2.name)
-        self._add_link("switch_7", host_3.name)
+        self._add_link("switch_7", pc2.name)
+        self._add_link("switch_7", pc3.name)
 
         # Add basic configuration to the machines
         for i in range(1, 4):
             self.lab.create_file_from_path(
-                os.path.join(cur_path, f"startups/host_{i}.startup"),
-                f"host_{i}.startup",
+                os.path.join(cur_path, f"startups/pc{i}.startup"),
+                f"pc{i}.startup",
             )
         for i in range(1, 8):
             self.lab.create_file_from_path(
@@ -73,11 +73,11 @@ class P4_MPLS(NetworkEnvBase):
 
             # add the switch_thrift_API.py file to the Kathara image
             sw.create_file_from_path(
-                os.path.join(BASE_DIR, "src/nika/net_env/utils/p4/sswitch_thrift_API.py"),
+                str(pkg_path("net_env/utils/p4/sswitch_thrift_API.py")),
                 "/usr/local/lib/python3.11/site-packages/sswitch_thrift_API.py",
             )
             sw.create_file_from_path(
-                os.path.join(BASE_DIR, "src/nika/net_env/utils/p4/thrift_API.py"),
+                str(pkg_path("net_env/utils/p4/thrift_API.py")),
                 "/usr/local/lib/python3.11/site-packages/thrift_API.py",
             )
 

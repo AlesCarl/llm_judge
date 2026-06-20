@@ -1,18 +1,27 @@
 import ipaddress
 import random
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 from nika.generator.fault.injector_service import FaultInjectorService
 from nika.net_env.net_env_pool import get_net_env_instance
-from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel
+from nika.orchestrator.problems.problem_base import ProblemMeta, RootCauseCategory, TaskDescription, TaskLevel, build_verify_result
 from nika.orchestrator.tasks.detection import DetectionTask
 from nika.orchestrator.tasks.localization import LocalizationTask
 from nika.orchestrator.tasks.rca import RCATask
 from nika.service.kathara import KatharaBaseAPI
-from nika.utils.failure_params import FailureParamField, FailureParamSchema
 
 # ==================================================================
 # Problem: DHCP distributing spoofed gateway to hosts
 # ==================================================================
+
+
+class DHCPSpoofedGatewayParams(BaseModel):
+    """Parameters for injecting a DHCP spoofed gateway fault."""
+
+    host_name: Optional[str] = Field(default=None, description="DHCP server host name. Defaults to runtime selection.")
+    host_name_2: Optional[str] = Field(default=None, description="Affected client host name. Defaults to runtime selection.")
 
 
 class DHCPSpoofedGatewayBase:
@@ -20,15 +29,8 @@ class DHCPSpoofedGatewayBase:
     root_cause_name: str = "dhcp_spoofed_gateway"
 
     TAGS: str = ["dhcp"]
-    FAILURE_PARAM_SCHEMA = FailureParamSchema(
-        problem_name="dhcp_spoofed_gateway",
-        summary="Distribute spoofed gateway via DHCP.",
-        fields=(
-            FailureParamField("host_name", "str", "DHCP server host name."),
-            FailureParamField("host_name_2", "str", "Affected client host name."),
-        ),
-        example="nika failure inject dhcp_spoofed_gateway --set host_name=dhcp0 --set host_name_2=h1",
-    )
+
+    Params = DHCPSpoofedGatewayParams
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -38,18 +40,39 @@ class DHCPSpoofedGatewayBase:
         self.faulty_devices = [random.choice(self.net_env.servers["dhcp"])]
         self.faulty_devices.append(random.choice(self.net_env.hosts))
 
-    def inject_fault(self):
+    def inject_fault(self, params: DHCPSpoofedGatewayParams | None = None):
+        if params is None:
+            params = DHCPSpoofedGatewayParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        client_host = params.host_name_2 if params.host_name_2 is not None else self.faulty_devices[1]
         subnet = str(
             ipaddress.ip_network(
-                self.kathara_api.get_host_ip(self.faulty_devices[1], with_prefix=True), strict=False
+                self.kathara_api.get_host_ip(client_host, with_prefix=True), strict=False
             ).network_address
         )
-
         self.injector.inject_wrong_gateway(
-            dhcp_server=self.faulty_devices[0],
+            dhcp_server=dhcp_server,
             subnet=subnet,
             wrong_gw=".".join(subnet.split(".")[:3] + ["254"]),
         )
+
+    def verify_fault(self, params: DHCPSpoofedGatewayParams | None = None) -> dict:
+        """Verify dhcpd.conf has spoofed gateway ending in .254."""
+        if params is None:
+            params = DHCPSpoofedGatewayParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        grep_result = self.kathara_api.exec_cmd(
+            dhcp_server,
+            "grep 'option routers.*\\.254' /etc/dhcp/dhcpd.conf && echo found || echo absent",
+        ).strip()
+        verified = "found" in grep_result
+        return build_verify_result(
+            root_cause_name=self.root_cause_name,
+            faulty_devices=self.faulty_devices,
+            verified=verified,
+            details={"dhcp_server": dhcp_server, "grep_result": grep_result},
+        )
+
 
 class DHCPSpoofedGatewayDetection(DHCPSpoofedGatewayBase, DetectionTask):
     META = ProblemMeta(
@@ -83,22 +106,22 @@ class DHCPSpoofedGatewayRCA(DHCPSpoofedGatewayBase, RCATask):
 # ==================================================================
 
 
+class DHCPSpoofedDNSParams(BaseModel):
+    """Parameters for injecting a DHCP spoofed DNS fault."""
+
+    host_name: Optional[str] = Field(default=None, description="DHCP server host name. Defaults to runtime selection.")
+    host_name_2: Optional[str] = Field(default=None, description="Affected client host name. Defaults to runtime selection.")
+    wrong_dns: str = Field(default="8.8.8.8", description="Spoofed DNS IP.")
+
+
 class DHCPSpoofedDNSBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "dhcp_spoofed_dns"
 
     symptom_desc = "Some hosts can not access webservices."
     TAGS: str = ["dhcp"]
-    FAILURE_PARAM_SCHEMA = FailureParamSchema(
-        problem_name="dhcp_spoofed_dns",
-        summary="Distribute spoofed DNS via DHCP.",
-        fields=(
-            FailureParamField("host_name", "str", "DHCP server host name."),
-            FailureParamField("host_name_2", "str", "Affected client host name."),
-            FailureParamField("wrong_dns", "str", "Spoofed DNS IP.", default="8.8.8.8"),
-        ),
-        example="nika failure inject dhcp_spoofed_dns --set host_name=dhcp0 --set host_name_2=h1",
-    )
+
+    Params = DHCPSpoofedDNSParams
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -109,14 +132,36 @@ class DHCPSpoofedDNSBase:
         self.faulty_devices.append(random.choice(self.net_env.hosts))
         self.wrong_dns = "8.8.8.8"
 
-    def inject_fault(self):
+    def inject_fault(self, params: DHCPSpoofedDNSParams | None = None):
+        if params is None:
+            params = DHCPSpoofedDNSParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        client_host = params.host_name_2 if params.host_name_2 is not None else self.faulty_devices[1]
         subnet = str(
             ipaddress.ip_network(
-                self.kathara_api.get_host_ip(self.faulty_devices[1], with_prefix=True), strict=False
+                self.kathara_api.get_host_ip(client_host, with_prefix=True), strict=False
             ).network_address
         )
+        self.injector.inject_wrong_dns(dhcp_server=dhcp_server, subnet=subnet, wrong_dns=params.wrong_dns)
 
-        self.injector.inject_wrong_dns(dhcp_server=self.faulty_devices[0], subnet=subnet, wrong_dns=self.wrong_dns)
+    def verify_fault(self, params: DHCPSpoofedDNSParams | None = None) -> dict:
+        """Verify dhcpd.conf has spoofed DNS server 8.8.8.8."""
+        if params is None:
+            params = DHCPSpoofedDNSParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        wrong_dns = params.wrong_dns
+        grep_result = self.kathara_api.exec_cmd(
+            dhcp_server,
+            f"grep 'option domain-name-servers.*{wrong_dns}' /etc/dhcp/dhcpd.conf && echo found || echo absent",
+        ).strip()
+        verified = "found" in grep_result
+        return build_verify_result(
+            root_cause_name=self.root_cause_name,
+            faulty_devices=self.faulty_devices,
+            verified=verified,
+            details={"dhcp_server": dhcp_server, "wrong_dns": wrong_dns, "grep_result": grep_result},
+        )
+
 
 class DHCPSpoofedDNSDetection(DHCPSpoofedDNSBase, DetectionTask):
     META = ProblemMeta(
@@ -150,20 +195,20 @@ class DHCPSpoofedDNSRCA(DHCPSpoofedDNSBase, RCATask):
 # ==================================================================
 
 
+class DHCPSpoofedSubnetParams(BaseModel):
+    """Parameters for injecting a DHCP spoofed subnet fault."""
+
+    host_name: Optional[str] = Field(default=None, description="DHCP server host name. Defaults to runtime selection.")
+    host_name_2: Optional[str] = Field(default=None, description="Affected client host name. Defaults to runtime selection.")
+
+
 class DHCPSpoofedSubnetBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "dhcp_spoofed_subnet"
 
     TAGS: str = ["dhcp"]
-    FAILURE_PARAM_SCHEMA = FailureParamSchema(
-        problem_name="dhcp_spoofed_subnet",
-        summary="Delete DHCP subnet entry for an active client subnet.",
-        fields=(
-            FailureParamField("host_name", "str", "DHCP server host name."),
-            FailureParamField("host_name_2", "str", "Affected client host name."),
-        ),
-        example="nika failure inject dhcp_spoofed_subnet --set host_name=dhcp0 --set host_name_2=h1",
-    )
+
+    Params = DHCPSpoofedSubnetParams
 
     def __init__(self, scenario_name: str | None, **kwargs):
         super().__init__()
@@ -172,15 +217,81 @@ class DHCPSpoofedSubnetBase:
         self.injector = FaultInjectorService(lab_name=self.net_env.lab.name)
         self.faulty_devices = [random.choice(self.net_env.servers["dhcp"])]
         self.faulty_devices.append(random.choice(self.net_env.hosts))
-
-    def inject_fault(self):
-        subnet = str(
+        # Pre-compute target subnet at init time while the host still has its DHCP lease.
+        self.target_subnet = str(
             ipaddress.ip_network(
                 self.kathara_api.get_host_ip(self.faulty_devices[1], with_prefix=True), strict=False
             ).network_address
         )
-        self.injector.inject_delete_subnet(
-            dhcp_server=self.faulty_devices[0],
-            subnet=subnet,
+
+    def inject_fault(self, params: DHCPSpoofedSubnetParams | None = None):
+        if params is None:
+            params = DHCPSpoofedSubnetParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        if params.host_name_2 is not None:
+            subnet = str(
+                ipaddress.ip_network(
+                    self.kathara_api.get_host_ip(params.host_name_2, with_prefix=True), strict=False
+                ).network_address
+            )
+        else:
+            subnet = self.target_subnet
+        self.injector.inject_delete_subnet(dhcp_server=dhcp_server, subnet=subnet)
+
+    def verify_fault(self, params: DHCPSpoofedSubnetParams | None = None) -> dict:
+        """Verify the target subnet has been removed from dhcpd.conf."""
+        if params is None:
+            params = DHCPSpoofedSubnetParams()
+        dhcp_server = params.host_name if params.host_name is not None else self.faulty_devices[0]
+        subnet = self.target_subnet
+        sub_escaped = subnet.replace(".", "\\.")
+        match_output = self.kathara_api.exec_cmd(
+            dhcp_server,
+            f"grep 'subnet {sub_escaped} netmask' /etc/dhcp/dhcpd.conf | wc -l",
+        ).strip()
+        count_output = self.kathara_api.exec_cmd(
+            dhcp_server,
+            "grep 'subnet.*netmask' /etc/dhcp/dhcpd.conf | wc -l",
+        ).strip()
+        try:
+            match_count = int(match_output)
+        except ValueError:
+            match_count = -1
+        try:
+            subnet_count = int(count_output)
+        except ValueError:
+            subnet_count = -1
+        verified = match_count == 0
+        return build_verify_result(
+            root_cause_name=self.root_cause_name,
+            faulty_devices=self.faulty_devices,
+            verified=verified,
+            details={"dhcp_server": dhcp_server, "subnet_count": subnet_count, "deleted_subnet": subnet},
         )
 
+
+class DHCPSpoofedSubnetDetection(DHCPSpoofedSubnetBase, DetectionTask):
+    META = ProblemMeta(
+        root_cause_category=DHCPSpoofedSubnetBase.root_cause_category,
+        root_cause_name=DHCPSpoofedSubnetBase.root_cause_name,
+        task_level=TaskLevel.DETECTION,
+        description=TaskDescription.DETECTION,
+    )
+
+
+class DHCPSpoofedSubnetLocalization(DHCPSpoofedSubnetBase, LocalizationTask):
+    META = ProblemMeta(
+        root_cause_category=DHCPSpoofedSubnetBase.root_cause_category,
+        root_cause_name=DHCPSpoofedSubnetBase.root_cause_name,
+        task_level=TaskLevel.LOCALIZATION,
+        description=TaskDescription.LOCALIZATION,
+    )
+
+
+class DHCPSpoofedSubnetRCA(DHCPSpoofedSubnetBase, RCATask):
+    META = ProblemMeta(
+        root_cause_category=DHCPSpoofedSubnetBase.root_cause_category,
+        root_cause_name=DHCPSpoofedSubnetBase.root_cause_name,
+        task_level=TaskLevel.RCA,
+        description=TaskDescription.RCA,
+    )

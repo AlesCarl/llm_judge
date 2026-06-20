@@ -68,7 +68,7 @@ class FaultInjectorHost:
         """Inject a fault by causing high CPU usage on a host."""
         self.kathara_api.exec_cmd(
             host_name,
-            f"stress-ng --cpu 0  --cpu-load 100 --timeout {duration} &",
+            f"nohup stress-ng --cpu 0 --cpu-load 100 --timeout {duration} </dev/null >/dev/null 2>&1 &",
         )
         self.logger.info(f"Injected high CPU usage on {host_name} for {duration} seconds.")
 
@@ -84,7 +84,7 @@ class FaultInjectorHost:
         """Inject a fault by causing high memory usage on a host."""
         self.kathara_api.exec_cmd(
             host_name,
-            f"stress-ng --vm 0 --vm-bytes 75% -t {duration} &",
+            f"nohup stress-ng --vm 0 --vm-bytes 75% --timeout {duration} </dev/null >/dev/null 2>&1 &",
         )
         self.logger.info(f"Injected high memory usage on {host_name} for {duration} seconds.")
 
@@ -100,7 +100,7 @@ class FaultInjectorHost:
         """Inject a fault by causing high socket usage on a host."""
         self.kathara_api.exec_cmd(
             host_name,
-            f"stress-ng --sock 0 --timeout {duration} &",
+            f"nohup stress-ng --sock 0 --timeout {duration} </dev/null >/dev/null 2>&1 &",
         )
         self.logger.info(f"Injected high socket usage on {host_name} for {duration} seconds.")
 
@@ -116,7 +116,7 @@ class FaultInjectorHost:
         """Inject a fault by causing high CPU, memory, and I/O usage on a host."""
         self.kathara_api.exec_cmd(
             host_name,
-            f"stress-ng --cpu 0 --cpu-load 100 --iomix 0 --sock 0 --hdd 2 -vm 0 --vm-bytes 75% --timeout {duration} &",
+            f"nohup stress-ng --cpu 0 --cpu-load 100 --iomix 0 --sock 0 --hdd 2 --vm 0 --vm-bytes 75% --timeout {duration} </dev/null >/dev/null 2>&1 &",
         )
         self.logger.info(f"Injected high CPU, memory, and I/O usage on {host_name} for {duration} seconds.")
 
@@ -132,7 +132,7 @@ class FaultInjectorHost:
         """Inject a fault by causing high I/O usage on a host."""
         self.kathara_api.exec_cmd(
             host_name,
-            f"stress-ng --iomix 0 --timeout {duration} &",
+            f"nohup stress-ng --iomix 0 --timeout {duration} </dev/null >/dev/null 2>&1 &",
         )
         self.logger.info(f"Injected high I/O usage on {host_name} for {duration} seconds.")
 

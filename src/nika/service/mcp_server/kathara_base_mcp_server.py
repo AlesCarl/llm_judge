@@ -1,15 +1,14 @@
 import asyncio
-import os
 from typing import Dict, List
 
 from mcp.server.fastmcp import FastMCP
 
 from nika.service.kathara import KatharaAPIALL as KatharaAPI
+from nika.service.mcp_server.mcp_session_context import get_lab_name
 from nika.utils.errors import safe_tool
 
 # Initialize FastMCP server
 mcp = FastMCP(name="kathara_base_mcp_server", host="127.0.0.1", port=8000, log_level="INFO")
-LAB_NAME = os.getenv("LAB_NAME", "ospf_enterprise_dhcp")
 
 
 @safe_tool
@@ -21,7 +20,7 @@ async def get_reachability() -> str:
     Returns:
         str: The ping results from each host to all other hosts in the lab.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = await kathara_api.get_reachability()
     return result
 
@@ -39,7 +38,7 @@ def ping_pair(host_a: str, host_b: str, count: int = 4, args: str = "") -> str:
     Returns:
         str: The ping result from host_a to host_b.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.ping_pair(host_a=host_a, host_b=host_b, count=count, args=args)
     return result
 
@@ -57,7 +56,7 @@ def systemctl_ops(host_name: str, service_name: str, operation: str) -> str:
     Returns:
         str: The output of the systemctl command.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.systemctl_ops(host_name=host_name, service_name=service_name, operation=operation)
     return result
 
@@ -73,7 +72,7 @@ def get_host_net_config(host_name: str) -> dict:
     Returns:
         dict: The network configuration of the host.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     config = kathara_api.get_host_net_config(host_name=host_name)
     return config
 
@@ -90,7 +89,7 @@ def get_tc_statistics(host_name: str, intf_name: str) -> str:
     Returns:
         str: The tc statistics of the specified interface.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     stats = kathara_api.tc_show_statistics(host_name=host_name, intf_name=intf_name)
     return stats
 
@@ -107,7 +106,7 @@ def netstat(host_name: str, args: str = "-tuln") -> str:
     Returns:
         str: The output of the netstat command.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.netstat(host_name=host_name, args=args)
     return result
 
@@ -123,7 +122,7 @@ def ip_addr_statistics(host_name: str) -> str:
     Returns:
         str: The IP address statistics of the host.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.ip_addr_statistics(host_name=host_name)
     return result
 
@@ -141,7 +140,7 @@ def ethtool(host_name: str, interface: str, args: str) -> str:
     Returns:
         str: The output of the ethtool command.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.ethtool(host_name=host_name, interface=interface, args=args)
     return result
 
@@ -159,7 +158,7 @@ def curl_web_test(host_name: str, url: str, times: int = 5) -> str:
     Returns:
         str: The timing statistics of the curl command, including name lookup time, connect time, TTFB, and total time.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.curl_web_test(host_name=host_name, url=url, times=times)
     return result
 
@@ -185,7 +184,7 @@ def iperf_test(
     Returns:
         str: The output of the iperf test.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.iperf_test(
         client_host_name=client_host_name,
         server_host_name=server_host_name,
@@ -208,7 +207,7 @@ def cat_file(host_name: str, file_path: str) -> str:
     Returns:
         str: The contents of the file on the host.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.exec_cmd(host_name=host_name, command=f"cat {file_path}")
     return result
 
@@ -227,7 +226,7 @@ def exec_shell(
         command (str): The shell command to execute.
     """
 
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
     result = kathara_api.exec_cmd(host_name, command)
     return result
 
@@ -248,7 +247,7 @@ async def exec_shell_dual(
         host2 (str): The name of the second host.
         cmd2 (str): The shell command to execute on the second host.
     """
-    kathara_api = KatharaAPI(lab_name=LAB_NAME)
+    kathara_api = KatharaAPI(lab_name=get_lab_name())
 
     result1, result2 = await asyncio.gather(
         kathara_api.exec_cmd_async(host1, cmd1),
@@ -267,5 +266,5 @@ if __name__ == "__main__":
     # print(res)
     # res = exec_shell(host_name="pc1", command="ping -c 400 10.0.0.2")
     # print(res)
-    # res = get_host_net_config("host_2_1_1_1")
+    # res = get_host_net_config("pc_2_1_1_1")
     # print(res)

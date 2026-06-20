@@ -1,47 +1,108 @@
+"""System logger: writes structured JSONL events to {session_dir}/events.jsonl
+once a session directory is bound via ``bind_session_dir()``.
+
+Usage
+-----
+Basic logging (requires a bound session directory):
+    from nika.utils.logger import system_logger, bind_session_dir
+    bind_session_dir("/path/to/results/20260608-153412-ab3c1f")
+    system_logger.info("some message")
+
+Structured event logging:
+    from nika.utils.logger import log_event
+    log_event("env_start", "Lab deployed", scenario="simple_bgp", session_id="...")
+
+Bind a session directory (call once session_dir is known):
+    from nika.utils.logger import bind_session_dir
+    bind_session_dir("/path/to/results/20260608-153412-ab3c1f")
+"""
+
+import json
 import logging
 import os
+import threading
+from datetime import datetime
 
-from nika.config import BASE_DIR
-
-
-class SystemLogger:
-    def __init__(self):
-        log_path = os.path.join(BASE_DIR, "runtime", "nika.log")
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-
-        self.log_path = log_path
-
-        self.logger = logging.getLogger("SystemLogger")
-        self.logger.setLevel(logging.INFO)
-        self.logger.propagate = False
-
-        if not self.logger.handlers:
-            self._create_handler()
-            return
-
-        if not os.path.exists(self.log_path):
-            self._recreate_handler()
-
-    def _create_handler(self):
-        file_handler = logging.FileHandler(self.log_path, encoding="utf-8", mode="a")
-        formatter = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
-
-    def _recreate_handler(self):
-        for h in list(self.logger.handlers):
-            self.logger.removeHandler(h)
-        self._create_handler()
+_session_dir: str | None = None
+_session_events_path: str | None = None
+_logger_lock = threading.Lock()
 
 
-system_logger = SystemLogger().logger
+class _JsonlHandler(logging.Handler):
+    """Appends a structured JSON line to events.jsonl."""
+
+    def __init__(self, events_path: str) -> None:
+        super().__init__()
+        self._path = events_path
+
+    def emit(self, record: logging.LogRecord) -> None:
+        entry: dict = {
+            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+            "level": record.levelname,
+            "event": getattr(record, "event_type", "system"),
+            "message": record.getMessage(),
+        }
+        extra = getattr(record, "data", None)
+        if extra:
+            entry["data"] = extra
+        try:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            self.handleError(record)
 
 
-def refresh_logger():
-    """Refresh the logger by re-initializing it."""
+def _build_logger() -> logging.Logger:
+    logger = logging.getLogger("SystemLogger")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return logger
+
+
+def _attach_jsonl_handler(events_path: str) -> None:
+    logger = logging.getLogger("SystemLogger")
+    os.makedirs(os.path.dirname(events_path), exist_ok=True)
+    for h in list(logger.handlers):
+        if isinstance(h, _JsonlHandler):
+            logger.removeHandler(h)
+            h.close()
+    logger.addHandler(_JsonlHandler(events_path))
+
+
+system_logger = _build_logger()
+
+
+def refresh_logger() -> logging.Logger:
+    """Re-attach session file handlers (useful when log files rotate between commands)."""
     global system_logger
-    system_logger = SystemLogger().logger
-    return system_logger
+    with _logger_lock:
+        logger = logging.getLogger("SystemLogger")
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            h.close()
+        system_logger = _build_logger()
+        if _session_dir and _session_events_path:
+            _attach_jsonl_handler(_session_events_path)
+        return system_logger
+
+
+def bind_session_dir(session_dir: str) -> None:
+    """Attach per-session events.jsonl handler; call once session_dir is known."""
+    global _session_dir, _session_events_path
+    with _logger_lock:
+        os.makedirs(session_dir, exist_ok=True)
+        _session_dir = session_dir
+        _session_events_path = os.path.join(session_dir, "events.jsonl")
+        _attach_jsonl_handler(_session_events_path)
+
+
+def log_event(event_type: str, message: str, **data) -> None:
+    """Log a structured event with optional key/value metadata.
+
+    Writes a structured JSON line to events.jsonl when a session dir is bound.
+
+    Example::
+        log_event("env_start", "Lab deployed", scenario="simple_bgp", session_id="...")
+        log_event("failure_inject_error", "Inject failed", error="timeout")
+    """
+    system_logger.info(message, extra={"event_type": event_type, "data": data or None})
