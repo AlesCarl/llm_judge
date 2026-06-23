@@ -44,9 +44,11 @@ class RoleDebater:
         self.name = name
         self._messages: list = []
         self._structured_llm: BaseChatModel | None = None
+        # Optional invoke config (e.g. token-usage callback); set by the judge.
+        self.invoke_config: dict | None = None
 
 
-   
+
 
    ### setup
 
@@ -106,10 +108,14 @@ class RoleDebater:
         """
         with tracing_context(enabled=False):
             if self._structured_llm is not None:
-                parsed: BaseModel = self._structured_llm.invoke(self._messages)
+                parsed: BaseModel = self._structured_llm.invoke(
+                    self._messages, config=self.invoke_config
+                )
                 answer = parsed.model_dump_json(indent=2)
             else:
-                response: AIMessage = self.llm.invoke(self._messages)
+                response: AIMessage = self.llm.invoke(
+                    self._messages, config=self.invoke_config
+                )
                 answer = str(response.content)
 
         self.add_assistant_message(answer)

@@ -22,6 +22,7 @@ from nika.evaluator.base_judge import BaseJudge
 from nika.evaluator.schemas import DebaterResponse, JudgeResponse
 from nika.evaluator.multi_role_debate.debater import RoleDebater
 
+from nika.evaluator.token_meter import dump_cost, meter_config, new_meter
 from nika.evaluator.multi_role_debate.aggregator import aggregate_responses
 from nika.evaluator.multi_role_debate.roles_config import (
     DEFAULT_DEBATE_CONFIG,
@@ -150,9 +151,9 @@ class MultiRoleDebateJudge(BaseJudge):
     ### debate ###  main loop and transcript assembly
 
     def run_debate(
-        self, ground_truth: str, trace: str
+        self, ground_truth: str, trace: str, invoke_config: dict | None = None
     ) -> tuple[str, list[DebaterResponse | None]]:
-        
+
         """
         Run the full "multi-role debate" and return its outcome.
 
@@ -173,6 +174,8 @@ class MultiRoleDebateJudge(BaseJudge):
             raise ValueError("DebateConfig.roles is empty")
 
         debaters = [self._build_debater(r) for r in roles]
+        for d in debaters:
+            d.invoke_config = invoke_config
 
         statements: list[list[str]] = []
 
@@ -321,8 +324,10 @@ class MultiRoleDebateJudge(BaseJudge):
             raw_trace = f.read()
         trace = self._parse_trace(raw_trace)
 
-
-        transcript, final_responses = self.run_debate(ground_truth, trace)
+        meter = new_meter()
+        transcript, final_responses = self.run_debate(
+            ground_truth, trace, invoke_config=meter_config(meter)
+        )
 
 
         # Persist artefacts (transcript + per-debater raw responses).
@@ -354,5 +359,7 @@ class MultiRoleDebateJudge(BaseJudge):
 
         with open(save_path, "w+") as f:
             f.write(evaluation.model_dump_json(indent=2))
+
+        dump_cost(meter, save_path, judge="multi_role", filename="multirole_cost.json")
 
         return evaluation

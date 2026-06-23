@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 # from agent.llm.langchain_deepseek import DeepSeekLLM
 from agent.llm.model_factory import load_model
+from nika.evaluator.token_meter import dump_cost, meter_config, new_meter
 from agent.utils.template import LLM_JUDGE_PROMPT_TEMPLATE
 from nika.config import RESULTS_DIR
 from nika.orchestrator.problems.prob_pool import get_problem_instance
@@ -81,14 +82,18 @@ class LLMJudge(BaseJudge):
                 ground_truth=ground_truth,
                 trace=trace,
             )
+            meter = new_meter()
             with tracing_context(enabled=False):
-                evaluation: JudgeResponse = self.llm.invoke(self.prompt)
+                evaluation: JudgeResponse = self.llm.invoke(
+                    self.prompt, config=meter_config(meter)
+                )
 
             # Save evaluation result to file
-            
+
             if save_path:
                 with open(save_path, "w+") as f:
                  f.write(evaluation.model_dump_json(indent=2))
+                dump_cost(meter, save_path, judge="single", filename="single_cost.json")
 
 
 

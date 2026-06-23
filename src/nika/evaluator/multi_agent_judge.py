@@ -28,6 +28,7 @@ from langsmith import tracing_context
 
 from nika.evaluator.base_judge import BaseJudge
 from nika.evaluator.schemas import DebaterResponse, JudgeResponse
+from nika.evaluator.token_meter import dump_cost, meter_config, new_meter
 
 
 from agent.llm.model_factory import load_model
@@ -73,6 +74,8 @@ class DebatePlayer:
         self.name = name
         self._messages: list = []
         self._structured_llm: BaseChatModel | None = None
+        # Optional invoke config (e.g. token-usage callback); set by the judge.
+        self.invoke_config: dict | None = None
 
     def use_structured_output(self, schema) -> None:
         self._structured_llm = self.llm.with_structured_output(schema)
@@ -89,10 +92,14 @@ class DebatePlayer:
     def speak(self) -> str:
         with tracing_context(enabled=False):
             if self._structured_llm is not None:
-                response = self._structured_llm.invoke(self._messages)
+                response = self._structured_llm.invoke(
+                    self._messages, config=self.invoke_config
+                )
                 answer = response.model_dump_json(indent=2)
             else:
-                response: AIMessage = self.llm.invoke(self._messages)
+                response: AIMessage = self.llm.invoke(
+                    self._messages, config=self.invoke_config
+                )
                 answer = str(response.content)
         self.add_assistant_message(answer)
         logger.debug("[%s]\n%s", self.name, answer)
@@ -227,6 +234,7 @@ class MultiAgentJudge(BaseJudge):
         debater_names: list[str],
         final_parsed: list[dict[str, int]],
         consensus: bool,
+        invoke_config: dict | None = None,
     ) -> JudgeResponse:
         """Produce the final JudgeResponse as an evidence-grounded judge.
 
@@ -254,7 +262,9 @@ class MultiAgentJudge(BaseJudge):
             ),
         ]
         with tracing_context(enabled=False):
-            result: JudgeResponse = self._synthesis_llm.invoke(messages)
+            result: JudgeResponse = self._synthesis_llm.invoke(
+                messages, config=invoke_config
+            )
         return result
 
     def _build_transcript(self, rounds: list[dict]) -> str:
@@ -287,7 +297,12 @@ class MultiAgentJudge(BaseJudge):
             raw_trace = f.read()
         trace = self._parse_trace(raw_trace)
 
+        meter = new_meter()
+        invoke_config = meter_config(meter)
+
         debaters = self._create_debaters()
+        for d in debaters:
+            d.invoke_config = invoke_config
         debater_names = [d.name for d in debaters]
 
         rounds: list[dict] = []
@@ -369,6 +384,7 @@ class MultiAgentJudge(BaseJudge):
             debater_names=debater_names,
             final_parsed=final_parsed,
             consensus=consensus,
+            invoke_config=invoke_config,
         )
 
         with open(save_path, "w+") as f:
@@ -377,6 +393,8 @@ class MultiAgentJudge(BaseJudge):
         transcript_path = save_path.replace("llm_judge.json", "debate_transcript.txt")
         with open(transcript_path, "w+") as f:
             f.write(transcript)
+
+        dump_cost(meter, save_path, judge="multi", filename="multi_cost.json")
 
         return evaluation
 
