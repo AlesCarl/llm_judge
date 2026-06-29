@@ -51,6 +51,8 @@ class BasicReActAgent:
         self.session = Session()
         self.session.load_running_session(session_id=session_id)
         self.session_dir = self.session.session_dir
+        # Persist the step budget so each run.json is self-documenting.
+        self.session.update_session("max_steps", max_steps)
 
         # Set up Langfuse callback handler
         # Initialize Langfuse client

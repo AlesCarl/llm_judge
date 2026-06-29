@@ -18,8 +18,11 @@ OVERALL_DIAGNOSIS_PROMPT = """\
     - Do not provide mitigation unless explicitly required.
 """
 
-# Summarize when conversation exceeds this many characters ( 30k ≈ 7-8k tokens)
-_SUMMARIZE_CHAR_THRESHOLD = 30_000    # 20k
+# Summarize when conversation exceeds this many characters (80k ≈ 20k tokens).
+# Raised from 30k: num_ctx is 256k, so compressing at ~8k tokens was premature and
+# lossy. 80k keeps most investigations intact while staying conservative on latency
+# and still capping pathological runs.
+_SUMMARIZE_CHAR_THRESHOLD = 80_000
 
 # Keep this many recent messages intact after summarization
 _KEEP_LAST_MESSAGES = 6

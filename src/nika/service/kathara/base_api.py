@@ -115,10 +115,19 @@ class KatharaBaseAPI:
         else:
             output = result
 
+        # Empty output means the host is down/unreachable (e.g. host_crash) or its
+        # `ip` does not support `-j`. Treat it as "no gateway" instead of raising,
+        # so the agent gets a usable signal rather than wasting steps on retries.
+        if not (output or "").strip():
+            return None
+
         try:
             routes = json.loads(output)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse `ip -j route` output: {e}") from e
+        except json.JSONDecodeError:
+            # Non-JSON output (empty, or a runtime error string like a paused/down
+            # container) means we can't read the gateway: signal "none" instead of
+            # raising, so the agent doesn't waste steps retrying a failing tool.
+            return None
 
         for r in routes:
             if r.get("dst") == "default":
@@ -160,10 +169,19 @@ class KatharaBaseAPI:
         else:
             output = result
 
+        # Empty output means the host is down/unreachable (e.g. host_crash) or its
+        # `ip` does not support `-j`. Treat it as "no address" instead of raising,
+        # so the agent gets a usable signal rather than wasting steps on retries.
+        if not (output or "").strip():
+            return None
+
         try:
             ifaces = json.loads(output)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse `ip -j addr` output: {e}") from e
+        except json.JSONDecodeError:
+            # Non-JSON output (empty, or a runtime error string like a paused/down
+            # container) means the host has no readable address: signal "none"
+            # instead of raising, so the agent doesn't waste steps retrying.
+            return None
 
         def format_ip(ip: str, prefix: Optional[int]) -> str:
             if with_prefix and prefix is not None:
@@ -198,10 +216,19 @@ class KatharaBaseAPI:
         result = self.exec_cmd(host_name, cmd)
         output = "\n".join(result) if isinstance(result, list) else result
 
+        # Empty output means the host is down/unreachable (e.g. host_crash) or its
+        # `ip` does not support `-j`. Treat it as "no interfaces" instead of raising,
+        # so the agent gets a usable signal rather than wasting steps on retries.
+        if not (output or "").strip():
+            return []
+
         try:
             ifaces = json.loads(output)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Failed to parse `ip -j addr` output: {e}") from e
+        except json.JSONDecodeError:
+            # Non-JSON output (empty, or a runtime error string like a paused/down
+            # container) means we can't list interfaces: signal "none" instead of
+            # raising, so the agent doesn't waste steps retrying.
+            return []
 
         names = []
         for link in ifaces:
