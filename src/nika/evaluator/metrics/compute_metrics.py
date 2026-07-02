@@ -71,13 +71,10 @@ def compute_all(results_dir: Path = RESULTS_DIR, judge_type: str = "all") -> Non
     # --- Test-retest reliability (offline, from rep files) ---
     # Reuses the saved llm_judge_<type>_rep*.json — no extra LLM calls.
     # Needs N_REPS >= 2 (>= 3 recommended) in the benchmark script.
-    print("\n--- Test-Retest Reliability (offline, MAD / std) ---")
-    compute_test_retest_offline(results_dir, judge_type=judge_type)
+    #print("\n--- Test-Retest Reliability (offline, MAD / std) ---")
+    #compute_test_retest_offline(results_dir, judge_type=judge_type)
 
 
-    ##  NB: la versione LIVE in test_retest.run_test_retest richiama l'LLM N volte
-    # -- usala solo se NON hai i file _rep* (legge conversation_diagnosis_agent.log
-    #    + ground_truth.json e rifa le run davvero).
 
 
 
@@ -103,13 +100,14 @@ if __name__ == "__main__":
 ## run it with:
 
 """
-cd /Users/alessandrocarlone/Desktop/TESI/Code/nika
 python -m nika.evaluator.metrics.compute_metrics \
-  --results-dir /Users/alessandrocarlone/Desktop/TESI/result_fabics/  judge_compare_0610_1157 \
+  --results-dir "/Users/alessandrocarlone/Desktop/TESI/result_fabics/50sessioni/ 1-results_0630_1843" \
   --judge-type all
+
 """
 
-
+## results_0630_1843
+## judge_compare_0610_1157
 
 
 

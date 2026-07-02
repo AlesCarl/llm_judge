@@ -19,9 +19,8 @@ OVERALL_DIAGNOSIS_PROMPT = """\
 """
 
 # Summarize when conversation exceeds this many characters (80k ≈ 20k tokens).
-# Raised from 30k: num_ctx is 256k, so compressing at ~8k tokens was premature and
-# lossy. 80k keeps most investigations intact while staying conservative on latency
-# and still capping pathological runs.
+# Raised from 30k
+
 _SUMMARIZE_CHAR_THRESHOLD = 80_000
 
 # Keep this many recent messages intact after summarization
@@ -47,15 +46,18 @@ class DiagnosisAgent:
         mcp_cfg = MCPServerConfig(session_id=session_id)
         server_names = select_diagnosis_servers(scenario_name, problem_names or [])
         mcp_server_config = mcp_cfg.load_filtered_config(server_names)
-        self.client = MultiServerMCPClient(connections=mcp_server_config)
+       
+        self.client = MultiServerMCPClient(connections=mcp_server_config) # load the MCP client with the filtered server configuration
         self.tools = None
         self.llm = load_model(llm_backend=llm_backend, model=model)
 
-    async def load_tools(self):
+
+    async def load_tools(self):  # load tools asynchronously  
         self.tools: list[StructuredTool] = await self.client.get_tools()
         for tool in self.tools:
             tool.handle_tool_error = True
             tool.handle_validation_error = True
+
 
     def _make_pre_model_hook(self):
         """Build the pre_model_hook closure capturing the LLM."""
@@ -74,6 +76,7 @@ class DiagnosisAgent:
             return {}
 
         return pre_model_hook
+
 
     def get_agent(self):
         agent = create_react_agent(

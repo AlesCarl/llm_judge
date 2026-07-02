@@ -26,6 +26,7 @@ class SubmissionAgent:
 
         self.llm = load_model(llm_backend=llm_backend, model=model)
 
+
     async def load_tools(self):
         self.tools: list[StructuredTool] = await self.client.get_tools()
         for tool in self.tools:
@@ -35,6 +36,9 @@ class SubmissionAgent:
     def get_agent(self):
         """Final submission node"""
         agent = create_agent(
-            model=self.llm, system_prompt=SUBMIT_PROMPT_TEMPLATE, tools=self.tools, name="SubmissionAgent"
+            model=self.llm, 
+            system_prompt=SUBMIT_PROMPT_TEMPLATE, 
+            tools=self.tools, 
+            name="SubmissionAgent"
         )
         return agent

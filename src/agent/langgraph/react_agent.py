@@ -24,6 +24,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 
+
 class AgentState(TypedDict):
     """The state of the agent."""
 
@@ -38,7 +39,8 @@ class AgentState(TypedDict):
     )
 
 
-class BasicReActAgent:
+class BasicReActAgent:  
+
     def __init__(
         self,
         session_id: str,
@@ -55,6 +57,7 @@ class BasicReActAgent:
         self.session.update_session("max_steps", max_steps)
 
         # Set up Langfuse callback handler
+        
         # Initialize Langfuse client
         langfuse = get_client()
 
@@ -77,12 +80,15 @@ class BasicReActAgent:
         asyncio.run(diagnosis_agent.load_tools())
         self.diagnosis_agent = diagnosis_agent.get_agent()
 
+
+        # load agent and tools
         submission_agent = SubmissionAgent(session_id=session_id, llm_backend=llm_backend, model=model)
         asyncio.run(submission_agent.load_tools())
         self.submission_agent = submission_agent.get_agent()
 
+
         # build the state graph
-        worker_builder = StateGraph(AgentState)
+        worker_builder = StateGraph(AgentState)              # create a state graph with the defined AgentState
         worker_builder.add_node("diagnosis_agent", self.diagnosis_agent_builder)
         worker_builder.add_node("submission_agent", self.submission_agent_builder)
 
@@ -101,7 +107,10 @@ class BasicReActAgent:
         # compile the graph
         self.graph = worker_builder.compile()
 
-    async def run(self, task_description: str):
+
+
+
+    async def run(self, task_description: str): ## 
         with ls.tracing_context(
             project_name=os.getenv("LANGSMITH_PROJECT", "NIKA"),
             metadata={
@@ -118,6 +127,9 @@ class BasicReActAgent:
                 config={"callbacks": [self.langfuse_handler]},
             )
             return result
+
+
+
 
     async def diagnosis_agent_builder(self, state: AgentState):
         try:
@@ -150,6 +162,9 @@ class BasicReActAgent:
                 "diagnosis_report": ["ERROR_MAX_STEPS_REACHED"],
                 "is_max_steps_reached": True,
             }
+
+
+
 
     async def submission_agent_builder(self, state: AgentState):
         diag_text = state["diagnosis_report"][-1]
