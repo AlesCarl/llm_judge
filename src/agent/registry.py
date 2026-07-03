@@ -14,6 +14,10 @@ def create_agent(
     llm_backend: str,
     model: str,
     max_steps: int = 20,
+    max_loops: int = 1,
+    judge_llm_backend: str = "ollama",
+    judge_model: str = "qwen3.6:35b",
+    retry_on_timeout: bool = False,
     reasoning_effort: str | None = None,
     stream_output: bool = True,
 ) -> Any:
@@ -25,6 +29,10 @@ def create_agent(
                 llm_backend=llm_backend,
                 model=model,
                 max_steps=max_steps,
+                max_loops=max_loops,
+                judge_llm_backend=judge_llm_backend,
+                judge_model=judge_model,
+                retry_on_timeout=retry_on_timeout,
             )
         case "mock":
             return MockAgent(

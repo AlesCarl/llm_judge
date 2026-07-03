@@ -8,59 +8,21 @@ from pathlib import Path
 
 from langchain_core.exceptions import OutputParserException
 
+from nika.evaluator.generic_eval import generic_eval
 from nika.evaluator.llm_judge import LLMJudge
 from nika.evaluator.multi_agent_judge import MultiAgentJudge
 from nika.evaluator.multi_role_debate.multi_role_debate_judge import MultiRoleDebateJudge
 from nika.evaluator.result_log import EVAL_METRICS_FILENAME, MESSAGES_FILENAME
 from nika.evaluator.trace_parser import AgentTraceParser
-from nika.orchestrator.tasks.detection import DetectionSubmission
-from nika.orchestrator.tasks.localization import LocalizationTask
-from nika.orchestrator.tasks.rca import RCATask
 from nika.utils.logger import bind_session_dir, log_event, system_logger
 from nika.utils.session import Session
 from nika.workflows.session.close import close_session
 
 logger = system_logger
 
-
-def generic_eval(gt, submission):
-    """Score detection, localization, and RCA from structured ``gt`` and ``submission``."""
-    try:
-        parsed_detect_sub = DetectionSubmission.model_validate({"is_anomaly": submission.get("is_anomaly", False)})
-        if gt["is_anomaly"] == parsed_detect_sub.is_anomaly:
-            detection_score = 1.0
-        else:
-            detection_score = 0.0
-    except Exception:
-        detection_score = -1.0
-
-    try:
-        loc_acc, loc_prec, loc_rec, loc_f1 = LocalizationTask().eval(
-            submission={"faulty_devices": submission.get("faulty_devices", [])},
-            gt={"faulty_devices": gt.get("faulty_devices", [])},
-        )
-    except Exception:
-        loc_acc, loc_prec, loc_rec, loc_f1 = -1.0, -1.0, -1.0, -1.0
-
-    try:
-        rca_acc, rca_prec, rca_rec, rca_f1 = RCATask().eval(
-            submission={"root_cause_name": submission.get("root_cause_name", [])},
-            gt={"root_cause_name": gt.get("root_cause_name", [])},
-        )
-    except Exception:
-        rca_acc, rca_prec, rca_rec, rca_f1 = -1.0, -1.0, -1.0, -1.0
-
-    return (
-        detection_score,
-        loc_acc,
-        loc_prec,
-        loc_rec,
-        loc_f1,
-        rca_acc,
-        rca_prec,
-        rca_rec,
-        rca_f1,
-    )
+# ``generic_eval`` now lives in ``nika.evaluator.generic_eval`` so the in-loop
+# agent can reuse it without importing this module (which pulls in the LLM
+# judges). Re-exported here to keep existing call sites working.
 
 
 def run_eval_metrics(*, session_id: str | None = None) -> None:

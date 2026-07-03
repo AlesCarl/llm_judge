@@ -35,6 +35,27 @@ def agent_run(
         "--max-steps",
         help="Max ReAct steps (react and mock only; ignored for cli).",
     ),
+    max_loops: int = typer.Option(
+        1,
+        "-l",
+        "--max-loops",
+        help="Max retry loops with judge feedback (react only). 1 = no loop (baseline).",
+    ),
+    judge_backend: str = typer.Option(
+        "ollama",
+        "--judge-backend",
+        help="LLM provider for the in-loop judge (used only when --max-loops > 1).",
+    ),
+    judge_model: str = typer.Option(
+        "qwen3.6:35b",
+        "--judge-model",
+        help="Model id for the in-loop judge (used only when --max-loops > 1).",
+    ),
+    retry_on_timeout: bool = typer.Option(
+        False,
+        "--retry-on-timeout",
+        help="Also retry when the agent runs out of steps without submitting (react loop only).",
+    ),
     reasoning_effort: str | None = typer.Option(
         None,
         "-e",
@@ -50,6 +71,8 @@ def agent_run(
         raise typer.BadParameter(
             f"reasoning_effort must be one of {', '.join(REASONING_EFFORT_LEVELS)}"
         )
+    if max_loops < 1:
+        raise typer.BadParameter("--max-loops must be >= 1.")
 
     try:
         start_agent(
@@ -57,6 +80,10 @@ def agent_run(
             llm_backend,
             model,
             max_steps,
+            max_loops=max_loops,
+            judge_llm_backend=judge_backend,
+            judge_model=judge_model,
+            retry_on_timeout=retry_on_timeout,
             session_id=session_id,
             reasoning_effort=reasoning_effort,
         )
