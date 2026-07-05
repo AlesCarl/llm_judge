@@ -1,8 +1,7 @@
 """Deterministic submission-vs-ground-truth scoring, usable on open sessions.
 
 Kept free of judge/agent imports so the in-loop LangGraph agent can call it
-during a live run without pulling in the LLM evaluator stack (which would
-create an import cycle through ``agent.llm``).
+during a live run without pulling in the LLM evaluator stack .
 """
 
 from nika.orchestrator.tasks.detection import DetectionSubmission

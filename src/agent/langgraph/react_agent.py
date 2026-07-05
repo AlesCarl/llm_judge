@@ -126,6 +126,11 @@ class BasicReActAgent:
         self.judge_llm = None
         self._gt = {}
         self.fault_family = ""
+        # Best-attempt tracking: the final submission.json is the highest-scoring
+        # attempt, so a retry that regresses can never make the loop worse than
+        # the baseline (keep-best, not keep-last).
+        self._best_score = -1.0
+        self._best_submission = None
         if self.max_loops > 1:
             self.judge_llm = load_model(llm_backend=judge_llm_backend, model=judge_model)
             gt_path = Path(self.session_dir) / "ground_truth.json"
@@ -133,8 +138,13 @@ class BasicReActAgent:
                 self._gt = json.loads(gt_path.read_text(encoding="utf-8"))
             self.fault_family = getattr(self.session, "root_cause_category", "") or ""
 
-        # build the state graph
+        
+        ###  build the state graph
         self.graph = self._build_loop_graph() if self.max_loops > 1 else self._build_single_graph()
+
+
+
+
 
 
     def _build_single_graph(self):
@@ -194,10 +204,21 @@ class BasicReActAgent:
 
 
     def _attempt_budget(self, loop_count: int) -> int:
-        """Step budget schedule: full on the first attempt, reduced on retries."""
+        """Step budget (recursion_limit) for a diagnosis attempt.
+
+        A retry is NOT a fresh problem on equal footing with the first attempt.
+        It restarts from a blank slate ([task, digest, hint]) with no memory of
+        the concrete findings the first attempt gathered, so it must first
+        RE-DISCOVER the network state (re-run the same tools) BEFORE it can act
+        on the feedback. FABRIC traces showed retries doing 2-7x the tool calls
+        of the first attempt and hitting the recursion wall (~13 turns at budget
+        40) *before* they could submit — the guided work was then thrown away.
+        Give retries a larger budget so re-discovery + the feedback-directed
+        investigation both fit; the first attempt keeps the baseline budget.
+        """
         if loop_count == 0:
             return self.max_steps
-        return max(10, self.max_steps // 2)
+        return self.max_steps * 2
 
 
     async def run(self, task_description: str): ##
@@ -223,7 +244,33 @@ class BasicReActAgent:
                 },
                 config=config,
             )
+            if self.max_loops > 1:
+                self._finalize_best_submission()
             return result
+
+
+    def _submission_score(self, submission: dict) -> float:
+        """Scalar ranking of a submission (invalid/-1 dims count as 0)."""
+        s = generic_eval(self._gt, submission)
+        det, loc_f1, rca_f1 = s[0], s[4], s[8]
+        return max(det, 0.0) + max(loc_f1, 0.0) + max(rca_f1, 0.0)
+
+
+    def _finalize_best_submission(self):
+        """Ensure submission.json holds the best-scoring attempt (keep-best)."""
+        sub_path = Path(self.session_dir) / "submission.json"
+        # A final attempt may have written a submission the judge never scored
+        # (e.g. it submitted then timed out): consider it too.
+        if sub_path.exists() and sub_path.stat().st_size > 0:
+            try:
+                current = json.loads(sub_path.read_text(encoding="utf-8"))
+                if self._submission_score(current) > self._best_score:
+                    self._best_score = self._submission_score(current)
+                    self._best_submission = current
+            except Exception:
+                pass
+        if self._best_submission is not None:
+            sub_path.write_text(json.dumps(self._best_submission), encoding="utf-8")
 
 
 
@@ -234,16 +281,13 @@ class BasicReActAgent:
         # full (rabbit-hole) history.
         feedback = state.get("judge_feedback", "")
         if feedback:
+            # ``feedback`` already carries the keep/fix verdict header, the
+            # family-level guidance and the closing instruction (see
+            # loop_feedback.generate_feedback), so inject it as-is.
             messages = [
                 HumanMessage(content=state.get("task_description", "")),
                 HumanMessage(content=f"[SUMMARY OF YOUR PREVIOUS ATTEMPT]\n{state.get('attempt_summary', '')}"),
-                HumanMessage(
-                    content=(
-                        "[FEEDBACK FROM REVIEW — you were not correct last time]\n"
-                        f"{feedback}\n"
-                        "Re-investigate accordingly, then conclude with a fresh submission."
-                    )
-                ),
+                HumanMessage(content=feedback),
             ]
         else:
             messages = state["messages"]
@@ -315,20 +359,20 @@ class BasicReActAgent:
         no_submission = not (sub_path.exists() and sub_path.stat().st_size > 0)
 
         resolved = False
-        wrong_dims: list[str] = []
         scores = None
+        submission: dict = {}
         if not no_submission:
             submission = json.loads(sub_path.read_text(encoding="utf-8"))
             shutil.copyfile(sub_path, Path(self.session_dir) / f"submission_attempt_{loop_count}.json")
             scores = generic_eval(self._gt, submission)
             det, loc_f1, rca_f1 = scores[0], scores[4], scores[8]
             resolved = is_resolved(det, loc_f1, rca_f1)
-            if det != 1.0:
-                wrong_dims.append("detection")
-            if not (loc_f1 >= 1.0 - 1e-9):
-                wrong_dims.append("localization")
-            if not (rca_f1 >= 1.0 - 1e-9):
-                wrong_dims.append("root cause")
+
+            # Keep-best: remember the highest-scoring submission seen so far.
+            total = max(det, 0.0) + max(loc_f1, 0.0) + max(rca_f1, 0.0)
+            if total > self._best_score:
+                self._best_score = total
+                self._best_submission = submission
 
         self._log_loop_attempt(loop_count, resolved, no_submission, scores)
 
@@ -340,7 +384,8 @@ class BasicReActAgent:
             session_dir=self.session_dir,
             fault_family=self.fault_family,
             gt=self._gt,
-            wrong_dims=wrong_dims,
+            submission=submission,
+            scores=scores,
             llm=self.judge_llm,
             no_submission=no_submission,
         )
