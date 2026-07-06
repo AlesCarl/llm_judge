@@ -29,7 +29,7 @@ class DNSServiceDownParams(BaseModel):
 
 
 class DNSServiceDownBase:
-    root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
+    root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "dns_service_down"
 
     faulty_devices = "dns_server"
@@ -108,7 +108,7 @@ class DHCPServiceDownParams(BaseModel):
 
 
 class DHCPServiceDownBase:
-    root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
+    root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "dhcp_service_down"
 
     TAGS: str = ["dhcp"]
