@@ -17,7 +17,7 @@ from typing_extensions import TypedDict
 
 from agent.langgraph.domain_agents.diagnosis_agent import DiagnosisAgent
 from agent.langgraph.domain_agents.submission_agent import SubmissionAgent
-from agent.langgraph.loop_feedback import attempt_digest, generate_feedback, is_resolved
+from agent.langgraph.loop_feedback import generate_feedback, is_resolved
 from agent.llm.model_factory import load_model
 from agent.utils.loggers import AgentCallbackLogger
 from nika.evaluator.generic_eval import generic_eval
@@ -60,9 +60,9 @@ class AgentState(TypedDict):
         default="",
         description="Sanitized redirect hint injected into the next diagnosis attempt.",
     )
-    attempt_summary: str = Field(
+    attempt_findings: str = Field(
         default="",
-        description="Deterministic digest of the previous attempt's tool activity.",
+        description="Agent's own diagnosis report from the previous attempt (leak-free; for retry continuity).",
     )
 
 
@@ -281,14 +281,26 @@ class BasicReActAgent:
         # full (rabbit-hole) history.
         feedback = state.get("judge_feedback", "")
         if feedback:
-            # ``feedback`` already carries the keep/fix verdict header, the
-            # family-level guidance and the closing instruction (see
-            # loop_feedback.generate_feedback), so inject it as-is.
-            messages = [
+            # Retry context: a short imperative protocol frames the agent's OWN
+            # prior findings (so it can KEEP the confirmed dimensions instead of
+            # re-deriving and losing them) plus the keep/fix verdict + coach hint
+            # (``feedback`` already carries those). The tool digest is NOT shown
+            # to the agent anymore — it stays on the coach side only.
+            protocol = (
+                "[THIS IS A RETRY — refine, do NOT restart from scratch]\n"
+                "1. KEEP the confirmed dimensions: reuse your findings below, do not re-investigate them.\n"
+                "2. Use your tools ONLY on the to-fix dimension.\n"
+                "3. Submit the confirmed dimensions unchanged + the fixed one updated."
+            )
+            blocks = [
                 HumanMessage(content=state.get("task_description", "")),
-                HumanMessage(content=f"[SUMMARY OF YOUR PREVIOUS ATTEMPT]\n{state.get('attempt_summary', '')}"),
-                HumanMessage(content=feedback),
+                HumanMessage(content=protocol),
             ]
+            findings = (state.get("attempt_findings") or "").strip()[:2500]
+            if findings:
+                blocks.append(HumanMessage(content=f"[WHAT YOU FOUND LAST TIME]\n{findings}"))
+            blocks.append(HumanMessage(content=feedback))
+            messages = blocks
         else:
             messages = state["messages"]
 
@@ -393,7 +405,7 @@ class BasicReActAgent:
             "loop_count": loop_count,
             "resolved": False,
             "judge_feedback": hint,
-            "attempt_summary": attempt_digest(self.session_dir),
+            "attempt_findings": (state.get("diagnosis_report") or [""])[-1],
         }
 
 
