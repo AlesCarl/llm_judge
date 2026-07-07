@@ -29,6 +29,7 @@ class Bmv2SwitchDownParams(BaseModel):
 class Bmv2SwitchDownBase:
     root_cause_category = RootCauseCategory.LINK_FAILURE
     root_cause_name = "bmv2_switch_down"
+    discriminator: str = "lo switch programmabile P4 e' spento: il processo simple_switch non gira, nessun inoltro attraverso quel nodo"
     TAGS: str = ["p4"]
 
     Params = Bmv2SwitchDownParams
@@ -105,6 +106,7 @@ class FrrDownBase:
 
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "frr_service_down"
+    discriminator: str = "il routing del nodo e' del tutto spento: i demoni FRR (zebra/bgpd/ospfd) sono morti, vtysh non si connette, tabella di routing vuota"
     TAGS: str = ["frr"]
 
     Params = FrrDownParams

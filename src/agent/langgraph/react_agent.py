@@ -400,6 +400,7 @@ class BasicReActAgent:
             scores=scores,
             llm=self.judge_llm,
             no_submission=no_submission,
+            loop_count=loop_count,
         )
         return {
             "loop_count": loop_count,

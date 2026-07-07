@@ -30,6 +30,7 @@ class SDNControllerCrashParams(BaseModel):
 class SDNControllerCrashBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "sdn_controller_crash"
+    discriminator: str = "il controller SDN e' crashato: il processo POX e' morto, gli switch non ricevono nuove flow rule"
     TAGS: str = ["sdn"]
 
     Params = SDNControllerCrashParams
@@ -106,6 +107,7 @@ class SouthboundPortBlockParams(BaseModel):
 class SouthboundPortBlockBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "southbound_port_block"
+    discriminator: str = "il canale southbound e' bloccato dal firewall: gli switch non raggiungono il controller (porta OpenFlow filtrata), pur essendo vivo"
     TAGS: str = ["sdn"]
 
     Params = SouthboundPortBlockParams
@@ -183,6 +185,7 @@ class SouthboundPortMismatchParams(BaseModel):
 class SouthboundPortMismatchBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "southbound_port_mismatch"
+    discriminator: str = "il controller ascolta sulla porta southbound sbagliata: e' vivo ma gli switch non si connettono per mismatch di porta"
     TAGS: str = ["sdn"]
 
     Params = SouthboundPortMismatchParams
@@ -267,6 +270,7 @@ class FlowRuleShadowingParams(BaseModel):
 class FlowRuleShadowingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "flow_rule_shadowing"
+    discriminator: str = "una regola OpenFlow ad alta priorita' scarta il traffico oscurando le altre (drop priority=100 in cima al flow table OVS)"
     TAGS: str = ["sdn"]
 
     Params = FlowRuleShadowingParams
@@ -341,6 +345,7 @@ class FlowRuleLoopParams(BaseModel):
 class FlowRuleLoopBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name: str = "flow_rule_loop"
+    discriminator: str = "regole OpenFlow creano un loop di inoltro: i pacchetti rimbalzano tra le porte (output verso la porta d'ingresso)"
     TAGS: str = ["sdn"]
 
     Params = FlowRuleLoopParams

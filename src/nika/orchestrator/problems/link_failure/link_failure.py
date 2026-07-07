@@ -31,6 +31,7 @@ class LinkFailureParams(BaseModel):
 class LinkFailureBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
     root_cause_name: str = "link_down"
+    discriminator: str = "l'interfaccia e' DOWN e resta giu': perdita totale e costante (operstate=down)"
     TAGS: str = ["link"]
 
     Params = LinkFailureParams
@@ -119,6 +120,7 @@ class LinkFlapParams(BaseModel):
 class LinkFlapBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
     root_cause_name: str = "link_flap"
+    discriminator: str = "il link va su/giu' in continuazione: connettivita' a intermittenza, ping che alterna risposte e perdite"
     TAGS: str = ["link"]
 
     Params = LinkFlapParams
@@ -248,6 +250,7 @@ class LinkDetachParams(BaseModel):
 class LinkDetachBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
     root_cause_name: str = "link_detach"
+    discriminator: str = "l'interfaccia e' proprio sparita: 'ip link' non la elenca piu' (rimossa), non solo giu'"
     TAGS: str = ["link"]
 
     Params = LinkDetachParams
@@ -330,6 +333,7 @@ class LinkFragParams(BaseModel):
 class LinkFragBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.LINK_FAILURE
     root_cause_name: str = "link_fragmentation_disabled"
+    discriminator: str = "passano i pacchetti piccoli ma cadono i grandi: problema di MTU/frammentazione (ping ok, trasferimenti grandi falliscono)"
     TAGS: str = ["link"]
 
     Params = LinkFragParams

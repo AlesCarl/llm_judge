@@ -32,6 +32,7 @@ class DNSRecordErrorParams(BaseModel):
 class DNSRecordErrorBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "dns_record_error"
+    discriminator: str = "la zona DNS mappa un sito sull'IP sbagliato: dig restituisce un indirizzo errato per quel nome (record A manomesso sul server)"
 
     symptom_desc = "Some hosts cannot access external websites."
     TAGS: str = ["dns"]

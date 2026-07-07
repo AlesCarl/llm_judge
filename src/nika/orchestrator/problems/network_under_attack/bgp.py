@@ -27,6 +27,7 @@ class BGPHijackingParams(BaseModel):
 class BGPHijackingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "bgp_hijacking"
+    discriminator: str = "un router annuncia in BGP un prefisso che non gli appartiene: il traffico verso quella rete viene attratto verso l'attaccante"
     TAGS: str = ["bgp", "http"]
 
     Params = BGPHijackingParams

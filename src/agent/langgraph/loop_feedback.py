@@ -202,6 +202,44 @@ def build_verdict(submission: dict, scores: tuple) -> tuple[str, list[str]]:
     return header, to_fix
 
 
+def family_differential(family: str) -> str:
+    """Leak-safe differential card: enumerate ALL known sibling sub-causes of a
+    fault family with their observable discriminator.
+
+    Fully deterministic (no LLM). Built straight from the problem registry, so the
+    output depends ONLY on *family* and is byte-identical regardless of which
+    sub-cause is the real ground truth. It must NEVER be passed through
+    scrub_ground_truth() (removing one entry from a closed, sorted list would
+    reveal it by elimination) and must NOT enter the coach-LLM prompt: it is
+    attached only on the deterministic header side, like build_verdict().
+
+    Returns "" when the family is unknown or has fewer than 2 members (a
+    single-entry list would disclose the answer outright).
+    """
+    from nika.orchestrator.problems.prob_pool import _PROBLEMS
+
+    rows: list[tuple[str, str]] = []
+    for name, levels in _PROBLEMS.items():
+        cls = next(iter(levels.values()), None)
+        if cls is None:
+            continue
+        if str(cls.META.root_cause_category) != family:
+            continue
+        disc = (getattr(cls, "discriminator", "") or "").strip()
+        rows.append((name, disc))
+
+    if len(rows) < 2:
+        return ""
+    rows.sort(key=lambda r: r[0])  # fixed alphabetical order, never GT-dependent
+    body = "\n".join(f" - {name}: {disc}" for name, disc in rows)
+    return (
+        "[DIFFERENTIAL — known sub-causes for this fault class, with the observable\n"
+        "sign that distinguishes each. Match them against what you actually saw; the\n"
+        "correct one is NOT marked — you must tell them apart from evidence.]\n"
+        f"{body}"
+    )
+
+
 def generate_feedback(
     *,
     session_dir: str,
@@ -211,11 +249,12 @@ def generate_feedback(
     scores: tuple | None,
     llm,
     no_submission: bool,
+    loop_count: int = 1,
 ) -> str:
     """Deterministic keep/fix verdict + single GT-aware family-level coach hint.
 
-    The verdict header is built from the agent's OWN submission (no GT, so it is
-    NOT scrubbed). Only the coach's LLM hint is GT-aware and gets scrubbed.
+    The verdict header is built from the agent's OWN submission (no GT). 
+    Only the coach's LLM hint is GT-aware and gets scrubbed.
     """
     digest = attempt_digest(session_dir)
     diag_text = last_diagnosis_text(session_dir)
@@ -228,6 +267,14 @@ def generate_feedback(
         to_fix = ["detection", "localization", "root cause"]
     else:
         header, to_fix = build_verdict(submission, scores)
+
+    # Escalation: from the 2nd feedback on, if the root cause is still wrong,
+    # attach the leak-safe family differential to the header (never to `human`,
+    # never scrubbed). Earlier retries get only the soft coach hint.
+    if loop_count >= 2 and "root cause" in to_fix:
+        card = family_differential(fault_family or "")
+        if card:
+            header = f"{header}\n\n{card}"
 
     focus_txt = ", ".join(to_fix) if to_fix else "the remaining details"
     family = fault_family or "unknown"

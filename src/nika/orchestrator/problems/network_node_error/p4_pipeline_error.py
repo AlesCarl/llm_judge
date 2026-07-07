@@ -157,6 +157,7 @@ class P4HeaderDefinitionErrorParams(BaseModel):
 class P4HeaderDefinitionErrorBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_header_definition_error"
+    discriminator: str = "il programma P4 non compila (errore di definizione header): JSON assente, lo switch non parte"
     TAGS: str = ["p4"]
 
     Params = P4HeaderDefinitionErrorParams
@@ -251,6 +252,7 @@ class P4CompilationErrorParserStateParams(BaseModel):
 class P4CompilationErrorParserStateBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_compilation_error_parser_state"
+    discriminator: str = "il programma P4 non compila (errore nel parser): il JSON manca e lo switch non si avvia"
     TAGS: str = ["p4"]
 
     Params = P4CompilationErrorParserStateParams
@@ -341,6 +343,7 @@ class P4TableEntryMissingParams(BaseModel):
 class P4TableEntryMissingBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_table_entry_missing"
+    discriminator: str = "la tabella di forwarding P4 e' vuota: nessuna entry di match, lo switch scarta per mancanza di regole (switch attivo, tabella azzerata)"
     TAGS: str = ["p4"]
 
     Params = P4TableEntryMissingParams
@@ -419,6 +422,7 @@ class P4TableEntryMisconfigParams(BaseModel):
 class P4TableEntryMisconfigBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_table_entry_misconfig"
+    discriminator: str = "una entry della tabella P4 ha l'azione sbagliata: solo certi flussi vengono inoltrati male (switch attivo, tabella popolata)"
     TAGS: str = ["p4"]
 
     Params = P4TableEntryMisconfigParams
@@ -506,6 +510,7 @@ class P4MPLSLabelLimitExceededParams(BaseModel):
 class P4MPLSLabelLimitExceededBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "mpls_label_limit_exceeded"
+    discriminator: str = "lo switch P4 scarta i pacchetti con troppe label MPLS: limite di stack ridotto nel programma"
 
     TAGS: str = ["mpls"]
 

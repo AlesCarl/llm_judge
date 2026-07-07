@@ -28,6 +28,7 @@ class HostMissingIPParams(BaseModel):
 class HostMissingIPBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_missing_ip"
+    discriminator: str = "l'interfaccia dell'host non ha alcun IP: 'ip addr' non mostra 'inet', l'host non puo' comunicare"
     TAGS: str = ["pc"]
 
     Params = HostMissingIPParams
@@ -114,6 +115,7 @@ class HostIPConflictParams(BaseModel):
 class HostIPConflictBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_ip_conflict"
+    discriminator: str = "due host condividono lo stesso IP: connettivita' a intermittenza e conflitti ARP sull'indirizzo duplicato"
     TAGS: str = ["pc"]
 
     Params = HostIPConflictParams
@@ -202,6 +204,7 @@ class HostIncorrectIPParams(BaseModel):
 class HostIncorrectIPBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_incorrect_ip"
+    discriminator: str = "l'host ha un IP nella subnet sbagliata: l'indirizzo non appartiene alla rete a cui e' collegato"
     TAGS: str = ["pc"]
 
     Params = HostIncorrectIPParams
@@ -288,6 +291,7 @@ class HostIncorrectGatewayParams(BaseModel):
 class HostIncorrectGatewayBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_incorrect_gateway"
+    discriminator: str = "il default gateway e' errato: comunica in locale ma non raggiunge altre reti (rotta di default verso un gateway inesistente)"
     TAGS: str = ["pc", "frr"]
 
     Params = HostIncorrectGatewayParams
@@ -379,6 +383,7 @@ class HostIncorrectNetmaskParams(BaseModel):
 class HostIncorrectNetmaskBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_incorrect_netmask"
+    discriminator: str = "l'host ha la netmask sbagliata: prefisso errato su eth0, confonde chi e' in-link e chi no"
     TAGS: str = ["pc", "frr"]
 
     Params = HostIncorrectNetmaskParams
@@ -477,6 +482,7 @@ class HostIncorrectDNSParams(BaseModel):
 class HostIncorrectDNSBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_incorrect_dns"
+    discriminator: str = "/etc/resolv.conf dell'host punta a un DNS sbagliato: i nomi non si risolvono, ma il server DNS reale funziona"
     TAGS: str = ["dns"]
 
     Params = HostIncorrectDNSParams

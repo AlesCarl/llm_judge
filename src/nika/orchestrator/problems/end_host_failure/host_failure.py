@@ -26,6 +26,7 @@ class HostCrashParams(BaseModel):
 class HostCrashBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_crash"
+    discriminator: str = "l'host e' completamente irraggiungibile e non risponde a nulla: e' spento/bloccato, non un problema di configurazione"
     TAGS: str = ["pc"]
 
     Params = HostCrashParams
