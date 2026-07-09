@@ -1,59 +1,109 @@
-"""In-loop feedback helpers for the retry loop in ``BasicReActAgent``.
+"""GT-free in-loop feedback (verifier coach) for the retry loop in ``BasicReActAgent``.
 
-Two responsibilities, kept deliberately on the judge side of the leak
-firewall (they may read the ground truth; the agent model must not):
+The in-loop judge NO LONGER sees the ground truth: everything it tells the
+agent must be *extracted* (from the agent's own evidence or from the live
+network via read-only tools), never handed down from the answer key. The GT
+is used only by the offline evaluator (``nika.workflows.eval``) after the run.
 
-- "attempt_digest" — a deterministic (no-LLM, leak-free by construction)
-  summary of what the agent did in the previous attempt, built from the tool
-  calls recorded in messages.jsonl.
+Pipeline per attempt (class ``VerifierCoach``):
 
-- "generate_feedback" — a single GT-aware LLM call (the judge model,
-  e.g. qwen) that turns "what went wrong" into a short redirect hint at the
-  fault-family granularity, never naming the exact root cause or devices.
-  A mechanical "scrub_ground_truth" pass guarantees the hard constraint even
-  if the model disobeys.
+1. VERIFY (optional — the ablation flag ``verifier_tools`` controls it):
+   a small ReAct agent with the same read-only diagnostic MCP tools audits
+   the 2-4 load-bearing claims of the agent's submission against the live
+   network and reports CONFIRMED / REFUTED / COULD-NOT-CHECK per claim.
 
+2. REVIEW: a single LLM call grades each answer dimension
+   (detection / localization / root_cause) as SUPPORTED / WEAK / UNSUPPORTED
+   based on the evidence (verification report first, agent's own trace
+   second), picks the most consistent fault family from the closed registry
+   list, extracts new case-file facts, and writes a short redirect hint.
+
+3. ``compose_feedback`` assembles the deterministic message injected into the
+   next attempt: submission echo + per-dimension verdict + verifier
+   observations + (from the 2nd feedback on) the family differential card
+   for the *coach-suspected* family + the hint.
+
+Leak note: ``family_differential`` is unchanged (deterministic, alphabetical,
+GT-independent by construction) but is now keyed by the coach's suspicion,
+not by the GT family — the card may therefore be the wrong family; the lead
+text says so explicitly.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.errors import GraphRecursionError
+from langgraph.prebuilt import create_react_agent
 from langsmith import tracing_context
 
-# Float tolerance for the deterministic "resolved" check. 
-RESOLVED_EPS = 1e-9
+from agent.utils.loggers import AgentCallbackLogger
 
-_COACH_SYSTEM = (
-    "You are a senior network troubleshooting coach. A junior agent tried to "
-    "diagnose a network fault and got SOME OR ALL of its answer wrong. You are given what the "
-    "agent did, which parts of its answer are still 'to fix', and the CORRECT "
-    "FAULT FAMILY. Write a SHORT hint (2-3 sentences) that helps the agent fix "
-    "ONLY the parts still to fix.\n"
-    "HARD RULES:\n"
-    "- Give guidance ONLY on the dimensions listed as 'to fix'. Any dimension "
-    "NOT listed is already CONFIRMED correct: the agent must keep it exactly as "
-    "is — never suggest changing a confirmed part.\n"
-    "- Steer only to the FAULT FAMILY / class of problem and the type of checks "
-    "that the still-wrong part requires.\n"
-    "- NEVER name a specific root cause label, and NEVER name specific device or "
-    "host names. Do not reveal the answer — only point the agent in the right "
-    "direction so it can find it itself.\n"
-    "- Be concrete about what the agent over-explored or neglected."
+_DIMS = ("detection", "localization", "root_cause")
+_STATUSES = ("SUPPORTED", "WEAK", "UNSUPPORTED")
+
+# Step budget (recursion_limit) for one verification pass: ~5 tool calls.
+_VERIFY_BUDGET = 12
+
+# Cap on the accumulated cross-attempt case file (facts, newest kept).
+_CASE_FILE_CAP = 25
+
+
+_VERIFIER_SYSTEM = (
+    "You are an independent network fault verifier. A junior agent has "
+    "diagnosed a fault on a live network; you are given its claims. You do "
+    "NOT know the correct answer.\n"
+    "Your job: audit the claims against the live network with as few tool "
+    "calls as possible.\n"
+    "Method:\n"
+    "1. Pick the 2-4 claims that carry the diagnosis (the stated root cause, "
+    "the accused devices, the anomaly itself).\n"
+    "2. For each, run the single most direct check that could confirm or "
+    "refute it.\n"
+    "3. If a check refutes a claim, note what you observed instead.\n"
+    "Rules: read-only — only inspect, never fix or change anything; audit the "
+    "claims, do not re-diagnose the whole network.\n"
+    "Finish with a plain report, one line per claim:\n"
+    "CLAIM: <claim> — CONFIRMED | REFUTED | COULD-NOT-CHECK — <evidence observed>"
 )
 
 
-def is_resolved(detection_score: float, loc_f1: float, rca_f1: float) -> bool:
-    """Composite stop criterion: detection, localization and RCA all exact-match."""
-    return (
-        detection_score == 1.0
-        and loc_f1 >= 1.0 - RESOLVED_EPS
-        and rca_f1 >= 1.0 - RESOLVED_EPS
-    )
+_COACH_SYSTEM = (
+    "You are a senior network troubleshooting reviewer. A junior agent "
+    "diagnosed a network fault. You do NOT know the correct answer — judge "
+    "only whether each part of its answer is backed by the available evidence "
+    "(the independent verification report, when present, outweighs the "
+    "agent's own reasoning).\n"
+    "Grade three dimensions:\n"
+    "- detection: is the anomaly / no-anomaly call justified by evidence?\n"
+    "- localization: are the accused devices actually implicated?\n"
+    "- root_cause: does the evidence establish the named cause itself, or "
+    "only a symptom of it?\n"
+    "Status meaning: SUPPORTED = direct evidence backs it; WEAK = plausible "
+    "but unverified; UNSUPPORTED = contradicted or no evidence.\n"
+    "Then write a hint (2-3 sentences) ONLY about the non-SUPPORTED "
+    "dimensions: name the missing check or the contradiction, concretely. "
+    "Never write the diagnosis for the agent.\n"
+    "Pick suspected_family: the fault family most consistent with the "
+    "evidence, chosen from KNOWN FAULT FAMILIES, or \"unsure\".\n"
+    "List up to 5 new_facts: short factual observations established this "
+    "attempt (device/interface states, outputs seen) — facts only, no "
+    "conclusions.\n"
+    "Reply with ONLY this JSON (no other text):\n"
+    '{"detection": {"status": "...", "why": "..."}, '
+    '"localization": {"status": "...", "why": "..."}, '
+    '"root_cause": {"status": "...", "why": "..."}, '
+    '"suspected_family": "...", "new_facts": ["..."], "hint": "..."}'
+)
 
+
+# --------------------------------------------------------------------------
+# messages.jsonl readers (deterministic, no LLM)
+# --------------------------------------------------------------------------
 
 def _tool_events(session_dir: str) -> list[dict]:
     path = Path(session_dir) / "messages.jsonl"
@@ -71,135 +121,79 @@ def _tool_events(session_dir: str) -> list[dict]:
     return events
 
 
-def attempt_digest(session_dir: str) -> str:
-    """Deterministic, leak-free digest of the previous attempt's tool activity."""
-    events = _tool_events(session_dir)
-    tools: list[str] = []
-    for e in events:
-        if e.get("event") != "tool_start":
-            continue
-        tool = e.get("tool")
-        name = tool.get("name") if isinstance(tool, dict) else str(tool)
-        tools.append(name or "unknown_tool")
+def _clean_tool_output(raw: str, max_chars: int) -> str:
+    """Best-effort extraction of the content field from a str(ToolMessage)."""
+    m = re.search(r"content=['\"](.*?)['\"]\s+\w+=", raw, flags=re.DOTALL)
+    text = m.group(1) if m else raw
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
 
-    if not tools:
+
+def attempt_digest(session_dir: str, max_calls: int = 15) -> str:
+    """Evidence digest of the LAST diagnosis attempt (deterministic, no LLM).
+
+    Slices messages.jsonl at the most recent ``attempt_start`` marker (written
+    by the diagnosis node), then pairs each diagnosis-agent tool_start with
+    its tool_end/tool_error so the coach sees WHAT each check returned, not
+    just which tools ran. Long transcripts keep the last *max_calls* calls in
+    detail plus an aggregate count line.
+    """
+    events = _tool_events(session_dir)
+
+    # Keep only the current attempt.
+    last_marker = -1
+    for i, e in enumerate(events):
+        if e.get("event") == "attempt_start":
+            last_marker = i
+    events = events[last_marker + 1:]
+
+    calls: list[dict] = []  # {"name":…, "input":…, "output":…}
+    pending: list[dict] = []
+    for e in events:
+        if e.get("agent") != "diagnosis_agent":
+            continue
+        ev = e.get("event")
+        if ev == "tool_start":
+            tool = e.get("tool")
+            name = tool.get("name") if isinstance(tool, dict) else str(tool)
+            call = {"name": name or "unknown_tool", "input": str(e.get("input") or "")[:100], "output": ""}
+            calls.append(call)
+            pending.append(call)
+        elif ev in ("tool_end", "tool_error") and pending:
+            call = pending.pop(0)
+            raw = str(e.get("output") or e.get("error") or "")
+            prefix = "ERROR: " if ev == "tool_error" else ""
+            call["output"] = prefix + _clean_tool_output(raw, 180)
+
+    if not calls:
         return "Previous attempt made no tool calls."
 
-    # Preserve order but collapse consecutive/aggregate counts for compactness.
     counts: dict[str, int] = {}
-    for name in tools:
-        counts[name] = counts.get(name, 0) + 1
+    for c in calls:
+        counts[c["name"]] = counts.get(c["name"], 0) + 1
     summary = ", ".join(f"{name}×{n}" for name, n in counts.items())
-    return f"Previous attempt used {len(tools)} tool calls: {summary}."
+
+    detailed = calls[-max_calls:]
+    lines = [f"{len(calls)} tool calls ({summary}). Last {len(detailed)} in detail:"]
+    for c in detailed:
+        lines.append(f"- {c['name']}({c['input']}) -> {c['output'] or '(no output captured)'}")
+    return "\n".join(lines)
 
 
-def last_diagnosis_text(session_dir: str, max_chars: int = 1200) -> str:
-    """Best-effort last free-text reasoning the agent produced (for coach context)."""
-    events = _tool_events(session_dir)
-    for e in reversed(events):
-        if e.get("event") == "llm_end":
-            text = str(e.get("text") or "").strip()
-            if text:
-                return text[:max_chars]
-    return ""
+# --------------------------------------------------------------------------
+# Fault-family knowledge (from the problem registry; GT-independent content)
+# --------------------------------------------------------------------------
 
+def known_families() -> list[str]:
+    """Sorted closed list of fault-family names from the problem registry."""
+    from nika.orchestrator.problems.prob_pool import _PROBLEMS
 
-def scrub_ground_truth(text: str, gt: dict) -> str:
-    """Mask any literal ground-truth token that slipped into text.
-
-    Belt-and-suspenders after the LLM: even if the coach names a device or the
-    exact root cause, the literal string never reaches the agent.
-    """
-    tokens: list[str] = []
-    tokens += [str(t) for t in gt.get("faulty_devices", []) if t]
-    tokens += [str(t) for t in gt.get("root_cause_name", []) if t]
-    scrubbed = text
-    for tok in sorted(set(tokens), key=len, reverse=True):
-        scrubbed = re.sub(re.escape(tok), "[…]", scrubbed, flags=re.IGNORECASE)
-    return scrubbed
-
-
-def _loc_verdict(prec: float, rec: float, f1: float, n: int) -> tuple[str, str]:
-    """Per-set verdict for localization from precision/recall (STRICT, leak-free).
-
-    Splits on precision first: only when everything the agent listed is correct
-    (prec == 1) is it safe to tell it to KEEP them all. The strict variant never
-    asserts that more devices exist (no cardinality hint).
-    """
-    if n == 0:
-        return "missing", "affected devices: NONE PROVIDED — you must identify the affected device(s)."
-    if f1 >= 1.0 - RESOLVED_EPS:
-        return "correct", "affected devices: this list looks right — keep it unless new evidence clearly contradicts it."
-    if prec >= 1.0 - RESOLVED_EPS:
-        return (
-            "incomplete",
-            "affected devices: the ones you listed look right — keep them unless "
-            "clearly contradicted; the list may be incomplete, so check whether other "
-            "devices of the same kind are also involved.",
-        )
-    if prec <= RESOLVED_EPS:
-        return (
-            "wrong",
-            "affected devices: none of the devices you listed appear to be involved "
-            "— reconsider where you look.",
-        )
-    return (
-        "mixed",
-        "affected devices: SOME of the devices you listed are not involved — keep "
-        "only the ones you are confident about and re-examine the rest.",
-    )
-
-
-def _rca_verdict(prec: float, rec: float, f1: float, n: int) -> tuple[str, str]:
-    """Per-set verdict for the root cause (usually a single label)."""
-    if n == 0:
-        return "missing", "root cause: NONE PROVIDED — you must name the most likely cause."
-    if f1 >= 1.0 - RESOLVED_EPS:
-        return "correct", "root cause: keep your current hypothesis unless new evidence clearly contradicts it."
-    if prec >= 1.0 - RESOLVED_EPS and rec < 1.0 - RESOLVED_EPS:
-        return (
-            "incomplete",
-            "root cause: your current hypothesis looks right — keep it unless "
-            "contradicted; consider whether another cause co-occurs.",
-        )
-    if prec <= RESOLVED_EPS:
-        return "wrong", "root cause: not correct — reconsider the cause."
-    return "mixed", "root cause: partly correct — keep the right one(s) and reconsider the rest."
-
-
-def _det_verdict(det: float) -> tuple[str, str]:
-    if det >= 1.0 - RESOLVED_EPS:
-        return "correct", "detection: your 'anomaly' assessment looks right — keep it unless new evidence clearly contradicts it."
-    return "wrong", "detection: there IS an anomaly to find — do not conclude 'no anomaly'."
-
-
-def build_verdict(submission: dict, scores: tuple) -> tuple[str, list[str]]:
-    """Deterministic, leak-controlled keep/fix header from the agent's OWN answer.
-
-    The header echoes the agent's own submission (never GT) tagged CONFIRMED vs
-    to-fix, so a retry can complete/repair the wrong parts without discarding the
-    correct ones. Returns (header_text, dims_to_fix).
-    """
-    det = scores[0]
-    dstat, dline = _det_verdict(det)
-    lstat, lline = _loc_verdict(scores[2], scores[3], scores[4], len(submission.get("faulty_devices") or []))
-    rstat, rline = _rca_verdict(scores[6], scores[7], scores[8], len(submission.get("root_cause_name") or []))
-
-    header = (
-        "[REVIEW OF YOUR PREVIOUS ATTEMPT — per-dimension verdict below]\n"
-        "Your previous submission:\n"
-        f"  detection : {submission.get('is_anomaly')}\n"
-        f"  root cause: {submission.get('root_cause_name', [])}\n"
-        f"  devices   : {submission.get('faulty_devices', [])}\n\n"
-        "Verdict (keep what looks solid, fix only the rest):\n"
-        f"  - {dline}\n  - {rline}\n  - {lline}"
-    )
-    to_fix = [
-        name
-        for name, st in (("detection", dstat), ("root cause", rstat), ("localization", lstat))
-        if st != "correct"
-    ]
-    return header, to_fix
+    fams: set[str] = set()
+    for levels in _PROBLEMS.values():
+        cls = next(iter(levels.values()), None)
+        if cls is not None:
+            fams.add(str(cls.META.root_cause_category))
+    return sorted(fams)
 
 
 def family_differential(family: str) -> str:
@@ -209,13 +203,11 @@ def family_differential(family: str) -> str:
 
     Fully deterministic (no LLM). Built straight from the problem registry, so the
     output depends ONLY on *family* and is byte-identical regardless of which
-    sub-cause is the real ground truth. It must NEVER be passed through
-    scrub_ground_truth() (removing one entry from a closed, sorted list would
-    reveal it by elimination) and must NOT enter the coach-LLM prompt: it is
-    attached only on the deterministic header side, like build_verdict().
+    sub-cause is the real fault. Since the GT-free rework the family is the
+    COACH'S SUSPICION (inferred from evidence), never the GT category.
 
     Returns "" when the family is unknown or has fewer than 2 members (a
-    single-entry list would disclose the answer outright).
+    single-entry list would disclose too much).
     """
     from nika.orchestrator.problems.prob_pool import _PROBLEMS
 
@@ -231,88 +223,227 @@ def family_differential(family: str) -> str:
 
     if len(rows) < 2:
         return ""
-    rows.sort(key=lambda r: r[0])  # fixed alphabetical order, never GT-dependent
+    rows.sort(key=lambda r: r[0])  # fixed alphabetical order
     return "\n".join(f" - {name}: {disc}" for name, disc in rows)
 
 
-def generate_feedback(
-    *,
-    session_dir: str,
-    fault_family: str,
-    gt: dict,
-    submission: dict,
-    scores: tuple | None,
-    llm,
-    no_submission: bool,
-    loop_count: int = 1,
-) -> str:
-    """Deterministic keep/fix verdict + single GT-aware family-level coach hint.
+# --------------------------------------------------------------------------
+# Coach review
+# --------------------------------------------------------------------------
 
-    The verdict header is built from the agent's OWN submission (no GT). 
-    Only the coach's LLM hint is GT-aware and gets scrubbed.
+@dataclass
+class CoachReview:
+    """Parsed outcome of one coach review (GT-free)."""
+
+    statuses: dict[str, tuple[str, str]]  # dim -> (STATUS, why)
+    suspected_family: str = ""
+    new_facts: list[str] = field(default_factory=list)
+    hint: str = ""
+    verification_report: str = ""
+    verified: bool = False  # True when the tool-using verification pass ran
+
+    @property
+    def approved(self) -> bool:
+        """Coach-side stop signal: every dimension graded SUPPORTED."""
+        return all(st == "SUPPORTED" for st, _ in self.statuses.values())
+
+
+def _strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _parse_review(text: str) -> CoachReview:
+    """Lenient JSON parse of the coach reply; degrades to all-WEAK + raw hint."""
+    text = _strip_think(text)
+    fallback = CoachReview(
+        statuses={dim: ("WEAK", "review unparseable") for dim in _DIMS},
+        hint=text[:600],
+    )
+    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not m:
+        return fallback
+    try:
+        data = json.loads(m.group(0))
+    except Exception:
+        return fallback
+
+    statuses: dict[str, tuple[str, str]] = {}
+    for dim in _DIMS:
+        entry = data.get(dim) or {}
+        status = str(entry.get("status", "")).strip().upper()
+        if status not in _STATUSES:
+            status = "WEAK"
+        statuses[dim] = (status, str(entry.get("why", "")).strip()[:220])
+    return CoachReview(
+        statuses=statuses,
+        suspected_family=str(data.get("suspected_family", "")).strip(),
+        new_facts=[str(f).strip()[:160] for f in (data.get("new_facts") or []) if str(f).strip()][:5],
+        hint=str(data.get("hint", "")).strip()[:800],
+    )
+
+
+def merge_case_file(existing: list[str], new_facts: list[str]) -> list[str]:
+    """Append non-duplicate facts; keep the newest _CASE_FILE_CAP entries."""
+    merged = list(existing)
+    seen = {f.lower() for f in merged}
+    for fact in new_facts:
+        if fact.lower() not in seen:
+            merged.append(fact)
+            seen.add(fact.lower())
+    return merged[-_CASE_FILE_CAP:]
+
+
+class VerifierCoach:
+    """GT-free in-loop reviewer: optional tool-grounded verification + review.
+
+    ``tools=None`` is the critique-only ablation arm (no verification pass);
+    with tools it becomes the grounded verifier (CRITIC-style).
     """
-    digest = attempt_digest(session_dir)
-    diag_text = last_diagnosis_text(session_dir)
 
-    if no_submission or scores is None:
-        header = (
-            "[REVIEW — you ran out of budget WITHOUT submitting]\n"
-            "You never concluded last time. Investigate more directly this time."
+    def __init__(self, llm, tools=None, session_dir: str = "", verify_budget: int = _VERIFY_BUDGET):
+        self.llm = llm
+        self.session_dir = session_dir
+        self.verify_budget = verify_budget
+        self.verifier_agent = None
+        if tools:
+            self.verifier_agent = create_react_agent(
+                model=llm,
+                tools=tools,
+                prompt=_VERIFIER_SYSTEM,
+            )
+
+    async def _verify(self, submission: dict, diagnosis_report: str) -> str:
+        """Run the tool-grounded audit of the submission's claims."""
+        request = (
+            "Claims to audit (the junior agent's submission):\n"
+            f"  anomaly present : {submission.get('is_anomaly')}\n"
+            f"  root cause      : {submission.get('root_cause_name', [])}\n"
+            f"  accused devices : {submission.get('faulty_devices', [])}\n\n"
+            f"Agent's reasoning for context:\n{diagnosis_report[:1500]}\n\n"
+            "Audit the claims now and produce the per-claim report."
         )
-        to_fix = ["detection", "localization", "root cause"]
+        try:
+            result = await self.verifier_agent.ainvoke(
+                {"messages": [HumanMessage(content=request)]},
+                config={
+                    "callbacks": [AgentCallbackLogger(agent="verifier_coach", session_dir=self.session_dir)],
+                    "recursion_limit": self.verify_budget,
+                },
+            )
+            return _strip_think(str(result["messages"][-1].content))[:1500]
+        except GraphRecursionError:
+            return "(verification ran out of budget before completing)"
+        except Exception as exc:  # audit must never kill the loop
+            return f"(verification failed: {exc})"
+
+    async def review(
+        self,
+        *,
+        task_description: str,
+        submission: dict,
+        diagnosis_report: str,
+        digest: str,
+        no_submission: bool,
+    ) -> CoachReview:
+        """Full review pass: (verify) + grade + hint + facts."""
+        verification_report = ""
+        verified = False
+        if self.verifier_agent is not None and not no_submission:
+            verification_report = await self._verify(submission, diagnosis_report)
+            verified = not verification_report.startswith("(verification")
+
+        sub_txt = (
+            "(the agent did NOT submit — it ran out of steps)"
+            if no_submission
+            else (
+                f"  anomaly present : {submission.get('is_anomaly')}\n"
+                f"  root cause      : {submission.get('root_cause_name', [])}\n"
+                f"  accused devices : {submission.get('faulty_devices', [])}"
+            )
+        )
+        human = (
+            f"TASK GIVEN TO THE AGENT:\n{task_description[:600]}\n\n"
+            f"AGENT'S SUBMISSION:\n{sub_txt}\n\n"
+            f"AGENT'S REASONING:\n{(diagnosis_report or '(none)')[:2200]}\n\n"
+            f"AGENT'S TOOL ACTIVITY:\n{digest[:2500]}\n\n"
+            f"INDEPENDENT VERIFICATION REPORT:\n{verification_report or '(not available)'}\n\n"
+            f"KNOWN FAULT FAMILIES: {', '.join(known_families())}\n\n"
+            "Write the JSON review now."
+        )
+        with tracing_context(enabled=False):
+            response = self.llm.invoke([
+                SystemMessage(content=_COACH_SYSTEM),
+                HumanMessage(content=human),
+            ])
+        review = _parse_review(str(getattr(response, "content", "")))
+        review.verification_report = verification_report
+        review.verified = verified
+        if no_submission:
+            # No claims were made: nothing can be SUPPORTED.
+            review.statuses = {dim: ("UNSUPPORTED", "no submission was made") for dim in _DIMS}
+        return review
+
+
+# --------------------------------------------------------------------------
+# Feedback assembly (deterministic; injected into the next attempt)
+# --------------------------------------------------------------------------
+
+_DIM_LABELS = {"detection": "detection ", "root_cause": "root cause", "localization": "devices   "}
+
+
+def compose_feedback(
+    *,
+    review: CoachReview,
+    submission: dict,
+    loop_count: int,
+    no_submission: bool,
+) -> str:
+    """Assemble the retry message from the coach review (no GT anywhere)."""
+    if no_submission:
+        parts = [
+            "[REVIEW — you ran out of budget WITHOUT submitting]\n"
+            "You never concluded last time. Commit to your best hypothesis "
+            "earlier this time instead of exhausting the step budget."
+        ]
     else:
-        header, to_fix = build_verdict(submission, scores)
+        verdict_lines = []
+        for dim in ("detection", "root_cause", "localization"):
+            status, why = review.statuses[dim]
+            verdict_lines.append(f"  - {_DIM_LABELS[dim]}: {status}" + (f" — {why}" if why else ""))
+        parts = [
+            "[REVIEW OF YOUR PREVIOUS ATTEMPT — an independent reviewer graded each "
+            "dimension on EVIDENCE (it does not know the answer)]\n"
+            "Your previous submission:\n"
+            f"  detection : {submission.get('is_anomaly')}\n"
+            f"  root cause: {submission.get('root_cause_name', [])}\n"
+            f"  devices   : {submission.get('faulty_devices', [])}\n\n"
+            "Verdict (SUPPORTED = evidence backs it, keep it; WEAK/UNSUPPORTED = re-work it):\n"
+            + "\n".join(verdict_lines)
+        ]
 
-    # Escalation: from the 2nd feedback on, if the root cause is still wrong,
-    # attach the leak-safe family differential to the header.
-    if loop_count >= 2 and "root cause" in to_fix:
-        card_body = family_differential(fault_family or "")
+    if review.verification_report:
+        parts.append(
+            "[VERIFIER OBSERVATIONS — checks run against the live network]\n"
+            + review.verification_report[:900]
+        )
+
+    # Escalation from the 2nd feedback on: attach the differential card for the
+    # COACH-SUSPECTED family (may be wrong — the lead says so).
+    rca_status = review.statuses["root_cause"][0]
+    if loop_count >= 2 and rca_status != "SUPPORTED":
+        card_body = family_differential(review.suspected_family)
         if card_body:
-            # IF the family has multiple sub-causes, add a differential card to the header
-            prev = ", ".join(str(x) for x in (submission.get("root_cause_name") or [])).strip()
-            prev_txt = f"'{prev}'" if prev else "your previous guess"
-            rca_prec = scores[6] if scores else 0.0
-            partial = rca_prec > RESOLVED_EPS  # some submitted label(s) already correct
-            if partial:
-                lead = (
-                    "[ROOT-CAUSE DIFFERENTIAL — part of your root cause is already RIGHT: "
-                    f"KEEP the correct label(s) in {prev_txt} and fix only the wrong one. "
-                    "The label you still need is one of the sub-causes listed below — pick "
-                    "it ONLY from this list, matching its observable sign to what you saw. "
-                    "The correct one is not marked.]"
-                )
-            else:
-                lead = (
-                    "[ROOT-CAUSE DIFFERENTIAL — your root cause is WRONG. The true cause IS "
-                    "one of the sub-causes listed below: pick your new root_cause_name ONLY "
-                    f"from this list, nothing else from the full catalog. {prev_txt} was "
-                    "scored incorrect — do NOT submit it again; choose the entry whose "
-                    "observable sign matches what you actually saw. The correct one is not "
-                    "marked — tell them apart from evidence.]"
-                )
-            header = f"{header}\n\n{lead}\n{card_body}"
+            parts.append(
+                "[ROOT-CAUSE DIFFERENTIAL — from the symptoms observed so far, the "
+                f"reviewer suspects the '{review.suspected_family}' fault family. Its "
+                "known sub-causes and their observable signs are listed below "
+                "(alphabetical; the reviewer does NOT know which is correct). Match "
+                "the signs to your evidence — and if none fits what you saw, the "
+                "family suspicion itself may be wrong.]\n"
+                + card_body
+            )
 
-    focus_txt = ", ".join(to_fix) if to_fix else "the remaining details"
-    family = fault_family or "unknown"
-    human = (
-        f"What the agent did:\n{digest}\n\n"
-        f"Its last reasoning (may be empty):\n{diag_text or '(none)'}\n\n"
-        f"Parts still TO FIX: {focus_txt}. Do NOT give guidance on anything else "
-        "— the other dimensions are already correct and must be kept.\n"
-        f"CORRECT FAULT FAMILY (for your eyes only, do not name specifics): {family}\n\n"
-        "Write the redirect hint now (only for the parts to fix)."
-    )
+    if review.hint:
+        parts.append(f"[GUIDANCE — for the non-SUPPORTED parts only]\n{review.hint}")
 
-    with tracing_context(enabled=False):
-        response = llm.invoke([
-            SystemMessage(content=_COACH_SYSTEM),
-            HumanMessage(content=human),
-        ])
-    hint = scrub_ground_truth(str(getattr(response, "content", "")).strip(), gt)
-
-    return (
-        f"{header}\n\n"
-        f"[GUIDANCE — for the parts to fix only]\n{hint}\n\n"
-        "Now conclude with your updated submission — always submit your best "
-        "hypothesis, never leave it empty."
-    )
+    return "\n\n".join(parts)

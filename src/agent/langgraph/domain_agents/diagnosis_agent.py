@@ -49,7 +49,7 @@ class DiagnosisAgent:
        
         self.client = MultiServerMCPClient(connections=mcp_server_config) # load the MCP client with the filtered server configuration
         self.tools = None
-        self.llm = load_model(llm_backend=llm_backend, model=model)
+        self.llm = load_model(llm_backend=llm_backend, model=model, temperature=0.7)
 
 
     async def load_tools(self):  # load tools asynchronously  

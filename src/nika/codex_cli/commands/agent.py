@@ -56,6 +56,14 @@ def agent_run(
         "--retry-on-timeout",
         help="Also retry when the agent runs out of steps without submitting (react loop only).",
     ),
+    verifier_tools: bool = typer.Option(
+        True,
+        "--verifier-tools/--no-verifier-tools",
+        help=(
+            "In-loop coach verifies the agent's claims with read-only network tools "
+            "(GT-free). --no-verifier-tools = critique-only ablation arm."
+        ),
+    ),
     reasoning_effort: str | None = typer.Option(
         None,
         "-e",
@@ -84,6 +92,7 @@ def agent_run(
             judge_llm_backend=judge_backend,
             judge_model=judge_model,
             retry_on_timeout=retry_on_timeout,
+            verifier_tools=verifier_tools,
             session_id=session_id,
             reasoning_effort=reasoning_effort,
         )

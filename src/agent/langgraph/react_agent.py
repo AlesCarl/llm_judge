@@ -17,10 +17,14 @@ from typing_extensions import TypedDict
 
 from agent.langgraph.domain_agents.diagnosis_agent import DiagnosisAgent
 from agent.langgraph.domain_agents.submission_agent import SubmissionAgent
-from agent.langgraph.loop_feedback import generate_feedback, is_resolved
+from agent.langgraph.loop_feedback import (
+    VerifierCoach,
+    attempt_digest,
+    compose_feedback,
+    merge_case_file,
+)
 from agent.llm.model_factory import load_model
-from agent.utils.loggers import AgentCallbackLogger
-from nika.evaluator.generic_eval import generic_eval
+from agent.utils.loggers import AgentCallbackLogger, MessageLogger
 from nika.utils.logger import system_logger
 from nika.utils.session import Session
 
@@ -58,11 +62,19 @@ class AgentState(TypedDict):
     )
     judge_feedback: str = Field(
         default="",
-        description="Sanitized redirect hint injected into the next diagnosis attempt.",
+        description="Coach review (verdicts + hint) injected into the next diagnosis attempt.",
     )
     attempt_findings: str = Field(
         default="",
-        description="Agent's own diagnosis report from the previous attempt (leak-free; for retry continuity).",
+        description="Agent's own diagnosis report from the previous attempt (for retry continuity).",
+    )
+    case_file: list[str] = Field(
+        default=[],
+        description="Cross-attempt evidence ledger: coach-extracted facts (no conclusions).",
+    )
+    loop_stop: bool = Field(
+        default=False,
+        description="Hard stop from the judge node (e.g. submission converged) independent of 'resolved'.",
     )
 
 
@@ -78,6 +90,7 @@ class BasicReActAgent:
         judge_llm_backend: str = "ollama",
         judge_model: str = "qwen3.6:35b",
         retry_on_timeout: bool = False,
+        verifier_tools: bool = True,
     ):
         self.session_id = session_id
         self.max_steps = max_steps
@@ -120,23 +133,24 @@ class BasicReActAgent:
         asyncio.run(submission_agent.load_tools())
         self.submission_agent = submission_agent.get_agent()
 
-        # Judge side of the leak firewall — only needed for the retry loop.
+        # GT-free in-loop coach — only needed for the retry loop. The ground
+        # truth is NEVER read here: the coach judges the agent's answer from
+        # evidence only (its trace + optional live-network verification); the
+        # GT is used exclusively by the offline evaluator after the run.
         # Left unloaded when max_loops == 1 so single-shot runs stay identical
         # (and don't pin the judge model in VRAM).
-        self.judge_llm = None
-        self._gt = {}
-        self.fault_family = ""
-        # Best-attempt tracking: the final submission.json is the highest-scoring
-        # attempt, so a retry that regresses can never make the loop worse than
-        # the baseline (keep-best, not keep-last).
-        self._best_score = -1.0
-        self._best_submission = None
+        self.coach = None
         if self.max_loops > 1:
-            self.judge_llm = load_model(llm_backend=judge_llm_backend, model=judge_model)
-            gt_path = Path(self.session_dir) / "ground_truth.json"
-            if gt_path.exists():
-                self._gt = json.loads(gt_path.read_text(encoding="utf-8"))
-            self.fault_family = getattr(self.session, "root_cause_category", "") or ""
+            judge_llm = load_model(llm_backend=judge_llm_backend, model=judge_model, temperature=0.1)
+            # verifier_tools=True → the coach audits the agent's claims with the
+            # same read-only diagnostic MCP tools (grounded verdicts).
+            # verifier_tools=False → critique-only ablation arm (no tools).
+            self.coach = VerifierCoach(
+                llm=judge_llm,
+                tools=diagnosis_agent.tools if verifier_tools else None,
+                session_dir=self.session_dir,
+            )
+            self.session.update_session("verifier_tools", bool(verifier_tools))
 
         
         ###  build the state graph
@@ -198,7 +212,11 @@ class BasicReActAgent:
 
 
     def _judge_router(self, state: AgentState) -> str:
-        if state.get("resolved", False) or state.get("loop_count", 0) >= self.max_loops:
+        if (
+            state.get("resolved", False)
+            or state.get("loop_stop", False)
+            or state.get("loop_count", 0) >= self.max_loops
+        ):
             return "end"
         return "retry"
 
@@ -237,68 +255,92 @@ class BasicReActAgent:
                 "model": self.session.model,
             },
         ):
-            result = await self.graph.ainvoke(
+            # Keep-last: submission.json naturally holds the final attempt's
+            # answer (no GT is available in-loop to rank attempts; the per-
+            # attempt copies let the offline evaluator compute an oracle-best
+            # comparison afterwards).
+            return await self.graph.ainvoke(
                 {
                     "messages": [HumanMessage(content=task_description)],
                     "task_description": task_description,
                 },
                 config=config,
             )
-            if self.max_loops > 1:
-                self._finalize_best_submission()
-            return result
 
 
-    def _submission_score(self, submission: dict) -> float:
-        """Scalar ranking of a submission (invalid/-1 dims count as 0)."""
-        s = generic_eval(self._gt, submission)
-        det, loc_f1, rca_f1 = s[0], s[4], s[8]
-        return max(det, 0.0) + max(loc_f1, 0.0) + max(rca_f1, 0.0)
+    @staticmethod
+    def _normalize_submission(submission: dict) -> tuple:
+        """Order-insensitive fingerprint of a submission (for convergence check)."""
+        return (
+            bool(submission.get("is_anomaly")),
+            tuple(sorted(str(d).lower() for d in (submission.get("faulty_devices") or []))),
+            tuple(sorted(str(r).lower() for r in (submission.get("root_cause_name") or []))),
+        )
 
 
-    def _finalize_best_submission(self):
-        """Ensure submission.json holds the best-scoring attempt (keep-best)."""
-        sub_path = Path(self.session_dir) / "submission.json"
-        # A final attempt may have written a submission the judge never scored
-        # (e.g. it submitted then timed out): consider it too.
-        if sub_path.exists() and sub_path.stat().st_size > 0:
-            try:
-                current = json.loads(sub_path.read_text(encoding="utf-8"))
-                if self._submission_score(current) > self._best_score:
-                    self._best_score = self._submission_score(current)
-                    self._best_submission = current
-            except Exception:
-                pass
-        if self._best_submission is not None:
-            sub_path.write_text(json.dumps(self._best_submission), encoding="utf-8")
+    def _submission_converged(self, submission: dict, loop_count: int) -> bool:
+        """True when this attempt's submission equals the previous attempt's.
+
+        A retry that reproduces the same answer despite the coach's challenge
+        means further loops would only burn budget — stop early.
+        """
+        if loop_count < 2:
+            return False
+        prev_path = Path(self.session_dir) / f"submission_attempt_{loop_count - 1}.json"
+        if not prev_path.exists():
+            return False
+        try:
+            prev = json.loads(prev_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return self._normalize_submission(prev) == self._normalize_submission(submission)
 
 
 
 
     async def diagnosis_agent_builder(self, state: AgentState):
-        # On a retry the judge has left a sanitized hint: reset the conversation
-        # to [task] + [previous-attempt digest] + [hint] instead of replaying the
-        # full (rabbit-hole) history.
+        # Per-attempt marker: lets attempt_digest() slice messages.jsonl to
+        # the current attempt only (the file accumulates across attempts).
+        MessageLogger(agent="system", session_dir=self.session_dir).log(
+            "attempt_start", {"loop": state.get("loop_count", 0)}
+        )
+        # On a retry the coach has left an evidence-based review: reset the
+        # conversation to [task] + [protocol] + [case file] + [own findings] +
+        # [review] instead of replaying the full (rabbit-hole) history.
         feedback = state.get("judge_feedback", "")
         if feedback:
-            # Retry context: a short imperative protocol frames the agent's OWN
-            # prior findings (so it can KEEP the confirmed dimensions instead of
-            # re-deriving and losing them) plus the keep/fix verdict + coach hint
-            # (``feedback`` already carries those). The tool digest is NOT shown
-            # to the agent anymore — it stays on the coach side only.
-            protocol = (
-                "[THIS IS A RETRY — keep what is confirmed, re-work what is marked wrong]\n"
-                "1. KEEP the confirmed dimensions: reuse your findings below and do not "
-                "re-investigate them unless something you find clearly contradicts them.\n"
-                "2. For each dimension marked wrong, re-open it: gather fresh evidence with "
-                "your tools — do NOT just resubmit your previous answer for it.\n"
-                "3. Conclude with a full submission: confirmed dimensions unchanged + the "
-                "reworked one(s) updated."
+            case_file = state.get("case_file") or []
+            # Retry context: a short imperative protocol frames the review.
+            # The verdicts come from an evidence-based reviewer (no answer
+            # key), so SUPPORTED means "well backed", not "guaranteed right".
+            protocol_lines = [
+                "[THIS IS A RETRY — an independent reviewer graded your previous answer "
+                "on evidence; it does NOT know the correct answer]",
+                "1. Dimensions graded SUPPORTED: keep them; re-investigate only if new "
+                "evidence clearly contradicts them.",
+                "2. Dimensions graded WEAK or UNSUPPORTED: re-open them — gather the "
+                "missing evidence with your tools; do not resubmit the same answer "
+                "unverified.",
+            ]
+            if case_file:
+                protocol_lines.append(
+                    "3. Trust the CASE FILE facts below — do not spend steps re-running "
+                    "checks that already established them."
+                )
+            protocol_lines.append(
+                f"{len(protocol_lines)}. Conclude with a full submission: kept dimensions "
+                "unchanged + the re-worked one(s) updated — always submit your best "
+                "hypothesis, never leave it empty."
             )
             blocks = [
                 HumanMessage(content=state.get("task_description", "")),
-                HumanMessage(content=protocol),
+                HumanMessage(content="\n".join(protocol_lines)),
             ]
+            if case_file:
+                facts = "\n".join(f"- {f}" for f in case_file)
+                blocks.append(
+                    HumanMessage(content=f"[CASE FILE — facts established in previous attempts]\n{facts}")
+                )
             findings = (state.get("attempt_findings") or "").strip()[:2500]
             if findings:
                 blocks.append(HumanMessage(content=f"[WHAT YOU FOUND LAST TIME]\n{findings}"))
@@ -364,57 +406,75 @@ class BasicReActAgent:
 
 
     async def judge_builder(self, state: AgentState):
-        """In-loop verifier: deterministic stop check + (if wrong) redirect hint.
+        """GT-free in-loop reviewer: coach verdict + redirect feedback.
 
-        Reads the ground truth locally and writes ONLY sanitized outputs into
-        the shared state — the GT never crosses to the agent side.
+        The ground truth is NEVER read here. Stop signals, in order:
+        budget exhausted → converged (same submission twice) → coach approved
+        (every dimension graded SUPPORTED from evidence).
         """
         loop_count = state.get("loop_count", 0) + 1
         sub_path = Path(self.session_dir) / "submission.json"
         no_submission = not (sub_path.exists() and sub_path.stat().st_size > 0)
 
-        resolved = False
-        scores = None
         submission: dict = {}
+        converged = False
         if not no_submission:
             submission = json.loads(sub_path.read_text(encoding="utf-8"))
             shutil.copyfile(sub_path, Path(self.session_dir) / f"submission_attempt_{loop_count}.json")
-            scores = generic_eval(self._gt, submission)
-            det, loc_f1, rca_f1 = scores[0], scores[4], scores[8]
-            resolved = is_resolved(det, loc_f1, rca_f1)
+            converged = self._submission_converged(submission, loop_count)
 
-            # Keep-best: remember the highest-scoring submission seen so far.
-            total = max(det, 0.0) + max(loc_f1, 0.0) + max(rca_f1, 0.0)
-            if total > self._best_score:
-                self._best_score = total
-                self._best_submission = submission
+        # Out of loop budget → stop without spending the coach LLM (the final
+        # attempt's quality is judged offline, with the GT, after the run).
+        if loop_count >= self.max_loops:
+            self._log_loop_attempt(loop_count, no_submission, stop_reason="budget_exhausted")
+            return {"loop_count": loop_count, "resolved": False}
 
-        self._log_loop_attempt(loop_count, resolved, no_submission, scores)
+        # Same answer as the previous attempt despite the challenge → another
+        # loop would only repeat itself; stop early.
+        if converged:
+            self._log_loop_attempt(loop_count, no_submission, stop_reason="converged")
+            return {"loop_count": loop_count, "resolved": False, "loop_stop": True}
 
-        # Solved, or out of loop budget → stop without spending the judge LLM.
-        if resolved or loop_count >= self.max_loops:
-            return {"loop_count": loop_count, "resolved": resolved}
-
-        hint = generate_feedback(
-            session_dir=self.session_dir,
-            fault_family=self.fault_family,
-            gt=self._gt,
+        diagnosis_report = (state.get("diagnosis_report") or [""])[-1]
+        review = await self.coach.review(
+            task_description=state.get("task_description", ""),
             submission=submission,
-            scores=scores,
-            llm=self.judge_llm,
+            diagnosis_report=diagnosis_report,
+            digest=attempt_digest(self.session_dir),
             no_submission=no_submission,
+        )
+
+        resolved = (not no_submission) and review.approved
+        self._log_loop_attempt(
+            loop_count,
+            no_submission,
+            stop_reason="coach_approved" if resolved else None,
+            review=review,
+        )
+        if resolved:
+            return {"loop_count": loop_count, "resolved": True}
+
+        feedback = compose_feedback(
+            review=review,
+            submission=submission,
             loop_count=loop_count,
+            no_submission=no_submission,
         )
         return {
             "loop_count": loop_count,
             "resolved": False,
-            "judge_feedback": hint,
-            "attempt_findings": (state.get("diagnosis_report") or [""])[-1],
+            "judge_feedback": feedback,
+            "attempt_findings": diagnosis_report,
+            "case_file": merge_case_file(state.get("case_file") or [], review.new_facts),
         }
 
 
-    def _log_loop_attempt(self, loop_count, resolved, no_submission, scores):
-        """Append a per-attempt record to loop_log.json (dataset for iteration curves)."""
+    def _log_loop_attempt(self, loop_count, no_submission, stop_reason=None, review=None):
+        """Append a per-attempt record to loop_log.json (dataset for iteration curves).
+
+        GT scores are no longer recorded here (no GT in the loop); the offline
+        evaluator recomputes them from submission_attempt_N.json + GT.
+        """
         log_path = Path(self.session_dir) / "loop_log.json"
         history = []
         if log_path.exists():
@@ -424,12 +484,13 @@ class BasicReActAgent:
                 history = []
         record = {
             "attempt": loop_count,
-            "resolved": resolved,
+            "resolved": stop_reason == "coach_approved",
             "no_submission": no_submission,
+            "stop_reason": stop_reason,
         }
-        if scores is not None:
-            record["detection_score"] = scores[0]
-            record["localization_f1"] = scores[4]
-            record["rca_f1"] = scores[8]
+        if review is not None:
+            record["coach_verdicts"] = {dim: status for dim, (status, _) in review.statuses.items()}
+            record["suspected_family"] = review.suspected_family
+            record["verified"] = review.verified
         history.append(record)
         log_path.write_text(json.dumps(history, indent=2), encoding="utf-8")

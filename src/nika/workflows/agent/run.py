@@ -20,6 +20,7 @@ def start_agent(
     judge_llm_backend: str = "ollama",
     judge_model: str = "qwen3.6:35b",
     retry_on_timeout: bool = False,
+    verifier_tools: bool = True,
     session_id: str | None = None,
     reasoning_effort: str | None = None,
     stream_output: bool = True,
@@ -60,6 +61,7 @@ def start_agent(
         judge_llm_backend=judge_llm_backend,
         judge_model=judge_model,
         retry_on_timeout=retry_on_timeout,
+        verifier_tools=verifier_tools,
         reasoning_effort=reasoning_effort,
         stream_output=stream_output,
     )

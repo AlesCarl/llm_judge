@@ -18,6 +18,7 @@ def create_agent(
     judge_llm_backend: str = "ollama",
     judge_model: str = "qwen3.6:35b",
     retry_on_timeout: bool = False,
+    verifier_tools: bool = True,
     reasoning_effort: str | None = None,
     stream_output: bool = True,
 ) -> Any:
@@ -33,6 +34,7 @@ def create_agent(
                 judge_llm_backend=judge_llm_backend,
                 judge_model=judge_model,
                 retry_on_timeout=retry_on_timeout,
+                verifier_tools=verifier_tools,
             )
         case "mock":
             return MockAgent(
