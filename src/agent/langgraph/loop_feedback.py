@@ -203,8 +203,9 @@ def build_verdict(submission: dict, scores: tuple) -> tuple[str, list[str]]:
 
 
 def family_differential(family: str) -> str:
-    """Leak-safe differential card: enumerate ALL known sibling sub-causes of a
-    fault family with their observable discriminator.
+    """Leak-safe differential body: the sorted list of ALL known sibling sub-causes
+    of a fault family, each with its observable discriminator (one " - name: sign"
+    line per sibling). The instructional framing around it is added by the caller.
 
     Fully deterministic (no LLM). Built straight from the problem registry, so the
     output depends ONLY on *family* and is byte-identical regardless of which
@@ -231,13 +232,7 @@ def family_differential(family: str) -> str:
     if len(rows) < 2:
         return ""
     rows.sort(key=lambda r: r[0])  # fixed alphabetical order, never GT-dependent
-    body = "\n".join(f" - {name}: {disc}" for name, disc in rows)
-    return (
-        "[DIFFERENTIAL — known sub-causes for this fault class, with the observable\n"
-        "sign that distinguishes each. Match them against what you actually saw; the\n"
-        "correct one is NOT marked — you must tell them apart from evidence.]\n"
-        f"{body}"
-    )
+    return "\n".join(f" - {name}: {disc}" for name, disc in rows)
 
 
 def generate_feedback(
@@ -272,9 +267,39 @@ def generate_feedback(
     # attach the leak-safe family differential to the header (never to `human`,
     # never scrubbed). Earlier retries get only the soft coach hint.
     if loop_count >= 2 and "root cause" in to_fix:
-        card = family_differential(fault_family or "")
-        if card:
-            header = f"{header}\n\n{card}"
+        card_body = family_differential(fault_family or "")
+        if card_body:
+            # One merged block: the explicit redirect (Lever #2) and the differential
+            # list, so a weak agent gets a single coherent instruction instead of two
+            # overlapping headers. The redirect is what a weak model will not infer on
+            # its own — that the true cause must be one of the listed siblings — so it
+            # keeps picking off-list causes from the full catalog.
+            #
+            # Referencing the agent's previous guess is leak-safe: it was scored (so
+            # it is the agent's own word, not a GT token) and the "do NOT repeat it"
+            # exclusion only fires when it was scored fully WRONG.
+            prev = ", ".join(str(x) for x in (submission.get("root_cause_name") or [])).strip()
+            prev_txt = f"'{prev}'" if prev else "your previous guess"
+            rca_prec = scores[6] if scores else 0.0
+            partial = rca_prec > RESOLVED_EPS  # some submitted label(s) already correct
+            if partial:
+                lead = (
+                    "[ROOT-CAUSE DIFFERENTIAL — part of your root cause is already RIGHT: "
+                    f"KEEP the correct label(s) in {prev_txt} and fix only the wrong one. "
+                    "The label you still need is one of the sub-causes listed below — pick "
+                    "it ONLY from this list, matching its observable sign to what you saw. "
+                    "The correct one is not marked.]"
+                )
+            else:
+                lead = (
+                    "[ROOT-CAUSE DIFFERENTIAL — your root cause is WRONG. The true cause IS "
+                    "one of the sub-causes listed below: pick your new root_cause_name ONLY "
+                    f"from this list, nothing else from the full catalog. {prev_txt} was "
+                    "scored incorrect — do NOT submit it again; choose the entry whose "
+                    "observable sign matches what you actually saw. The correct one is not "
+                    "marked — tell them apart from evidence.]"
+                )
+            header = f"{header}\n\n{lead}\n{card_body}"
 
     focus_txt = ", ".join(to_fix) if to_fix else "the remaining details"
     family = fault_family or "unknown"
