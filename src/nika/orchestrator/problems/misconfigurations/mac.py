@@ -28,7 +28,6 @@ class MacAddressConflictParams(BaseModel):
 class MacAddressConflictBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "mac_address_conflict"
-    discriminator: str = "due dispositivi hanno lo stesso MAC: connettivita' erratica in L2, la tabella di switching sfarfalla tra due porte"
     TAGS: str = ["mac"]
 
     Params = MacAddressConflictParams

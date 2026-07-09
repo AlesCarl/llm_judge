@@ -26,7 +26,6 @@ class BGPAclBlockParams(BaseModel):
 class BGPAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "bgp_acl_block"
-    discriminator: str = "il firewall blocca la porta TCP 179: le sessioni BGP non salgono (peer in Active/Connect)"
     TAGS: str = ["bgp"]
 
     Params = BGPAclBlockParams
@@ -101,7 +100,6 @@ class OSPFAclBlockParams(BaseModel):
 class OSPFAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "ospf_acl_block"
-    discriminator: str = "il firewall filtra il protocollo OSPF: le adiacenze non si formano, i vicini restano in Init/Down"
     TAGS: str = ["ospf"]
 
     Params = OSPFAclBlockParams
@@ -176,7 +174,6 @@ class ARPAclBlockParams(BaseModel):
 class ARPAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "arp_acl_block"
-    discriminator: str = "una regola firewall blocca l'ARP: i vicini restano irrisolti (INCOMPLETE), nessun MAC appreso sul segmento locale"
     TAGS: str = ["arp"]
 
     Params = ARPAclBlockParams
@@ -251,7 +248,6 @@ class IcmpAclBlockParams(BaseModel):
 class IcmpAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "icmp_acl_block"
-    discriminator: str = "solo l'ICMP e' bloccato dal firewall: il ping fallisce ma le connessioni reali (HTTP/TCP) passano, un falso 'down'"
     TAGS: str = ["icmp"]
 
     Params = IcmpAclBlockParams
@@ -325,7 +321,6 @@ class HttpAclBlockParams(BaseModel):
 class HttpAclBlockBase:
     root_cause_category = RootCauseCategory.MISCONFIGURATION
     root_cause_name = "http_acl_block"
-    discriminator: str = "il firewall blocca la porta 80: l'HTTP non passa (siti non caricano) mentre ping e DNS funzionano"
     TAGS: str = ["http", "pc"]
 
     Params = HttpAclBlockParams
@@ -399,7 +394,6 @@ class DNSPortBlockedParams(BaseModel):
 class DNSPortBlockedBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "dns_port_blocked"
-    discriminator: str = "il firewall blocca la porta 53: le query DNS non passano, ma il server DNS e' attivo"
 
     TAGS: str = ["dns", "http"]
 

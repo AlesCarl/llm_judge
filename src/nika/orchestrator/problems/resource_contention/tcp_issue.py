@@ -31,7 +31,6 @@ class SenderResourceContentionParams(BaseModel):
 class SenderResourceContentionBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "sender_resource_contention"
-    discriminator: str = "l'host che INVIA ha la CPU satura: throughput in uscita basso per contesa di risorse sul mittente"
     TAGS: str = ["http"]
 
     Params = SenderResourceContentionParams
@@ -107,7 +106,6 @@ class SenderApplicationDelayParams(BaseModel):
 class SenderApplicationDelayBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "sender_application_delay"
-    discriminator: str = "ritardo applicativo lato server: l'applicazione risponde lenta per una pausa nel codice (rete e CPU normali)"
     TAGS: str = ["http"]
 
     Params = SenderApplicationDelayParams
@@ -193,7 +191,6 @@ class ReceiverResourceContentionParams(BaseModel):
 class ReceiverResourceContentionBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "receiver_resource_contention"
-    discriminator: str = "l'host che RICEVE ha la CPU satura: non riesce a drenare i dati in ingresso, throughput basso lato ricezione"
     TAGS: str = ["http"]
 
     Params = ReceiverResourceContentionParams

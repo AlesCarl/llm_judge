@@ -27,7 +27,6 @@ class ArpCachePoisoningParams(BaseModel):
 class ArpCachePoisoningBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "arp_cache_poisoning"
-    discriminator: str = "la cache ARP ha un MAC falso per il gateway: il traffico e' dirottato (MITM), l'entry del gateway non corrisponde al MAC reale"
     TAGS: str = ["arp"]
 
     Params = ArpCachePoisoningParams

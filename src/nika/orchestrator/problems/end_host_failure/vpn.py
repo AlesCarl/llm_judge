@@ -28,7 +28,6 @@ class VPNMembershipMissingParams(BaseModel):
 class VPNMembershipMissingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "host_vpn_membership_missing"
-    discriminator: str = "l'host e' escluso dalla VPN: il suo peer e' disabilitato nella config WireGuard del server, non raggiunge le reti dietro il tunnel"
     TAGS: str = ["vpn"]
 
     Params = VPNMembershipMissingParams

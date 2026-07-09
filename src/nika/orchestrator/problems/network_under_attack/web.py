@@ -29,7 +29,6 @@ class WebDoSParams(BaseModel):
 class WebDoSBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "web_dos_attack"
-    discriminator: str = "un web server e' sotto flood di richieste: alta latenza/timeout sul servizio, volume anomalo in arrivo da un singolo host"
     symptom_desc: str = "Users reports high latency when accessing some web services."
     TAGS: str = ["http"]
 

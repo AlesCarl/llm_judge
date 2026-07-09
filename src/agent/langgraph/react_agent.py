@@ -457,7 +457,6 @@ class BasicReActAgent:
         feedback = compose_feedback(
             review=review,
             submission=submission,
-            loop_count=loop_count,
             no_submission=no_submission,
         )
         return {

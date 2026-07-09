@@ -29,7 +29,6 @@ class LinkHighPacketCorruptionParams(BaseModel):
 class LinkHighPacketCorruptionBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "link_high_packet_corruption"
-    discriminator: str = "il link e' su ma corrompe i pacchetti: perdite e ritrasmissioni elevate e casuali (non un down)"
     TAGS: str = ["link"]
 
     Params = LinkHighPacketCorruptionParams
@@ -113,7 +112,6 @@ class LinkBandwidthThrottlingParams(BaseModel):
 class LinkBandwidthThrottlingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "link_bandwidth_throttling"
-    discriminator: str = "banda strozzata su un link: throughput molto basso e latenza alta sotto carico (limite tc), i ping piccoli passano"
     TAGS: str = ["link"]
 
     Params = LinkBandwidthThrottlingParams
@@ -212,7 +210,6 @@ class IncastTrafficNetworkLimitationParams(BaseModel):
 class IncastTrafficNetworkLimitationBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "incast_traffic_network_limitation"
-    discriminator: str = "collasso da incast: molti flussi verso un solo host saturano il collo di bottiglia, throughput a picco sotto carico concorrente"
     TAGS: str = ["http"]
 
     Params = IncastTrafficNetworkLimitationParams

@@ -29,7 +29,6 @@ class OSPFAreaMisconfigParams(BaseModel):
 class OSPFAreaMisconfigBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "ospf_area_misconfiguration"
-    discriminator: str = "l'area OSPF e' configurata sbagliata: l'adiacenza non sale per mismatch di area tra vicini"
 
     TAGS: str = ["ospf"]
 
@@ -137,7 +136,6 @@ class OSPFNeighborMissingParams(BaseModel):
 class OSPFNeighborMissingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "ospf_neighbor_missing"
-    discriminator: str = "il router non include piu' le sue reti in OSPF: righe 'network' commentate, adiacenza/prefissi spariscono"
 
     TAGS: str = ["ospf"]
 

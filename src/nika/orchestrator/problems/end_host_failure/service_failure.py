@@ -31,7 +31,6 @@ class DNSServiceDownParams(BaseModel):
 class DNSServiceDownBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "dns_service_down"
-    discriminator: str = "il processo named e' morto sul server DNS: le query vanno in timeout (i file di zona sono corretti, manca il demone)"
 
     faulty_devices = "dns_server"
     symptom_desc = "Some hosts cannot access external websites."
@@ -111,7 +110,6 @@ class DHCPServiceDownParams(BaseModel):
 class DHCPServiceDownBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.END_HOST_FAILURE
     root_cause_name: str = "dhcp_service_down"
-    discriminator: str = "il processo dhcpd e' morto sul server DHCP: i client non ottengono piu' lease (servizio giu', non un errore di config)"
 
     TAGS: str = ["dhcp"]
 

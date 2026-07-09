@@ -15,18 +15,21 @@ Pipeline per attempt (class ``VerifierCoach``):
 2. REVIEW: a single LLM call grades each answer dimension
    (detection / localization / root_cause) as SUPPORTED / WEAK / UNSUPPORTED
    based on the evidence (verification report first, agent's own trace
-   second), picks the most consistent fault family from the closed registry
-   list, extracts new case-file facts, and writes a short redirect hint.
+   second), picks the most consistent fault family from the closed family
+   list (``known_families``, for coach context only — no per-scenario
+   catalog is exposed), extracts new case-file facts, and writes a short
+   redirect hint.
 
 3. ``compose_feedback`` assembles the deterministic message injected into the
    next attempt: submission echo + per-dimension verdict + verifier
-   observations + (from the 2nd feedback on) the family differential card
-   for the *coach-suspected* family + the hint.
+   observations + the hint.
 
-Leak note: ``family_differential`` is unchanged (deterministic, alphabetical,
-GT-independent by construction) but is now keyed by the coach's suspicion,
-not by the GT family — the card may therefore be the wrong family; the lead
-text says so explicitly.
+Kept deliberately generic (no Kathara-specific fault catalog): the fault
+family taxonomy (``known_families``) is a defensible general vocabulary for
+network faults, but the per-scenario sub-cause "differential card" (keyed to
+the simulator's problem registry, one discriminator string per scenario) was
+removed so this module has no simulation-specific coupling beyond the family
+names themselves.
 """
 
 from __future__ import annotations
@@ -194,37 +197,6 @@ def known_families() -> list[str]:
         if cls is not None:
             fams.add(str(cls.META.root_cause_category))
     return sorted(fams)
-
-
-def family_differential(family: str) -> str:
-    """Leak-safe differential body: the sorted list of ALL known sibling sub-causes
-    of a fault family, each with its observable discriminator (one " - name: sign"
-    line per sibling). The instructional framing around it is added by the caller.
-
-    Fully deterministic (no LLM). Built straight from the problem registry, so the
-    output depends ONLY on *family* and is byte-identical regardless of which
-    sub-cause is the real fault. Since the GT-free rework the family is the
-    COACH'S SUSPICION (inferred from evidence), never the GT category.
-
-    Returns "" when the family is unknown or has fewer than 2 members (a
-    single-entry list would disclose too much).
-    """
-    from nika.orchestrator.problems.prob_pool import _PROBLEMS
-
-    rows: list[tuple[str, str]] = []
-    for name, levels in _PROBLEMS.items():
-        cls = next(iter(levels.values()), None)
-        if cls is None:
-            continue
-        if str(cls.META.root_cause_category) != family:
-            continue
-        disc = (getattr(cls, "discriminator", "") or "").strip()
-        rows.append((name, disc))
-
-    if len(rows) < 2:
-        return ""
-    rows.sort(key=lambda r: r[0])  # fixed alphabetical order
-    return "\n".join(f" - {name}: {disc}" for name, disc in rows)
 
 
 # --------------------------------------------------------------------------
@@ -395,7 +367,6 @@ def compose_feedback(
     *,
     review: CoachReview,
     submission: dict,
-    loop_count: int,
     no_submission: bool,
 ) -> str:
     """Assemble the retry message from the coach review (no GT anywhere)."""
@@ -426,22 +397,6 @@ def compose_feedback(
             "[VERIFIER OBSERVATIONS — checks run against the live network]\n"
             + review.verification_report[:900]
         )
-
-    # Escalation from the 2nd feedback on: attach the differential card for the
-    # COACH-SUSPECTED family (may be wrong — the lead says so).
-    rca_status = review.statuses["root_cause"][0]
-    if loop_count >= 2 and rca_status != "SUPPORTED":
-        card_body = family_differential(review.suspected_family)
-        if card_body:
-            parts.append(
-                "[ROOT-CAUSE DIFFERENTIAL — from the symptoms observed so far, the "
-                f"reviewer suspects the '{review.suspected_family}' fault family. Its "
-                "known sub-causes and their observable signs are listed below "
-                "(alphabetical; the reviewer does NOT know which is correct). Match "
-                "the signs to your evidence — and if none fits what you saw, the "
-                "family suspicion itself may be wrong.]\n"
-                + card_body
-            )
 
     if review.hint:
         parts.append(f"[GUIDANCE — for the non-SUPPORTED parts only]\n{review.hint}")

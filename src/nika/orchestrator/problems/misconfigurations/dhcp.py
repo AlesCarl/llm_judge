@@ -28,7 +28,6 @@ class DHCPMissingSubnetParams(BaseModel):
 class DHCPMissingSubnetBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "dhcp_missing_subnet"
-    discriminator: str = "manca la dichiarazione di subnet nel dhcpd.conf: i client di quella rete non ottengono lease (il DHCP gira ma non ha pool per loro)"
 
     TAGS: str = ["dhcp"]
 

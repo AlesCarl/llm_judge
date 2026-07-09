@@ -28,7 +28,6 @@ class BGPAsnMisconfigParams(BaseModel):
 class BGPAsnMisconfigBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "bgp_asn_misconfig"
-    discriminator: str = "l'ASN BGP locale in frr.conf e' sbagliato: i peer non si stabiliscono per mismatch di AS number"
     TAGS: str = ["bgp"]
 
     Params = BGPAsnMisconfigParams
@@ -133,7 +132,6 @@ class BGPMissingAdvertiseParams(BaseModel):
 class BGPMissingAdvertiseBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "bgp_missing_route_advertisement"
-    discriminator: str = "il router non annuncia piu' le sue reti in BGP: righe 'network' commentate, i prefissi spariscono dai peer (sessione su, rotte assenti)"
     TAGS: str = ["bgp"]
 
     Params = BGPMissingAdvertiseParams
@@ -230,7 +228,6 @@ class StaticBlackHoleParams(BaseModel):
 class StaticBlackHoleBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "host_static_blackhole"
-    discriminator: str = "una rotta statica 'blackhole' scarta il traffico verso una rete precisa (presente in 'ip route', locale al dispositivo)"
     TAGS: str = ["bgp"]
 
     Params = StaticBlackHoleParams
@@ -320,7 +317,6 @@ class BGPBlackholeRouteLeakParams(BaseModel):
 class BGPBlackholeRouteLeakBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "bgp_blackhole_route_leak"
-    discriminator: str = "una rotta blackhole (Null0) viene propagata via BGP: il traffico verso quel prefisso viene scartato lungo il percorso"
     TAGS: str = ["bgp"]
 
     Params = BGPBlackholeRouteLeakParams
@@ -421,7 +417,6 @@ class BGPHijackingParams(BaseModel):
 class BGPHijackingBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.MISCONFIGURATION
     root_cause_name: str = "bgp_hijacking"
-    discriminator: str = "un router annuncia in BGP un prefisso che non gli appartiene: il traffico verso quella rete viene attratto verso l'attaccante"
     TAGS: str = ["bgp", "http"]
 
     Params = BGPHijackingParams

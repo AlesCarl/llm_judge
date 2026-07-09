@@ -28,7 +28,6 @@ class DNSLookupLatencyParams(BaseModel):
 class DNSLookupLatencyBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "dns_lookup_latency"
-    discriminator: str = "la risoluzione DNS e' lenta ma corretta: alta latenza sulle query (ritardo tc sull'interfaccia del server DNS)"
     symptom_desc: str = "Users experience high latency when accessing web services."
     TAGS: str = ["dns", "http"]
 
@@ -107,7 +106,6 @@ class LoadBalancerOverloadParams(BaseModel):
 class LoadBalancerOverloadBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.RESOURCE_CONTENTION
     root_cause_name: str = "load_balancer_overload"
-    discriminator: str = "il load balancer ha la CPU satura: alta latenza sulle richieste che passano da lui (contesa di risorse sul nodo)"
     TAGS: str = ["load_balancer", "http"]
 
     Params = LoadBalancerOverloadParams

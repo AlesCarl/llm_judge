@@ -27,7 +27,6 @@ class DHCPSpoofedGatewayParams(BaseModel):
 class DHCPSpoofedGatewayBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "dhcp_spoofed_gateway"
-    discriminator: str = "il DHCP distribuisce un gateway fasullo: i client ricevono via lease un default gateway errato (option routers manomessa)"
 
     TAGS: str = ["dhcp"]
 
@@ -118,7 +117,6 @@ class DHCPSpoofedDNSParams(BaseModel):
 class DHCPSpoofedDNSBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "dhcp_spoofed_dns"
-    discriminator: str = "il DHCP distribuisce un DNS fasullo: i client ricevono via lease un server DNS errato (option domain-name-servers manomessa)"
 
     symptom_desc = "Some hosts can not access webservices."
     TAGS: str = ["dhcp"]
@@ -207,7 +205,6 @@ class DHCPSpoofedSubnetParams(BaseModel):
 class DHCPSpoofedSubnetBase:
     root_cause_category: RootCauseCategory = RootCauseCategory.NETWORK_UNDER_ATTACK
     root_cause_name: str = "dhcp_spoofed_subnet"
-    discriminator: str = "una subnet viene rimossa dal DHCP in un contesto d'attacco: i client di quella rete perdono l'indirizzamento"
 
     TAGS: str = ["dhcp"]
 

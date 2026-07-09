@@ -30,7 +30,6 @@ class P4AggressiveDetectionThresholdsParams(BaseModel):
 class P4AggressiveDetectionThresholdsBase:
     root_cause_category = RootCauseCategory.NETWORK_NODE_ERROR
     root_cause_name = "p4_aggressive_detection_thresholds"
-    discriminator: str = "lo switch P4 tratta traffico legittimo come attacco: soglia di rilevamento abbassata, drop/allarmi su volumi normali"
     TAGS: str = ["p4", "bloom_filter"]
 
     Params = P4AggressiveDetectionThresholdsParams
