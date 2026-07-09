@@ -29,7 +29,7 @@ RESOLVED_EPS = 1e-9
 
 _COACH_SYSTEM = (
     "You are a senior network troubleshooting coach. A junior agent tried to "
-    "diagnose a network fault and got PART of it wrong. You are given what the "
+    "diagnose a network fault and got SOME OR ALL of its answer wrong. You are given what the "
     "agent did, which parts of its answer are still 'to fix', and the CORRECT "
     "FAULT FAMILY. Write a SHORT hint (2-3 sentences) that helps the agent fix "
     "ONLY the parts still to fix.\n"
@@ -186,8 +186,7 @@ def build_verdict(submission: dict, scores: tuple) -> tuple[str, list[str]]:
     rstat, rline = _rca_verdict(scores[6], scores[7], scores[8], len(submission.get("root_cause_name") or []))
 
     header = (
-        "[REVIEW OF YOUR PREVIOUS ATTEMPT — keep what is CONFIRMED below, and genuinely "
-        "reconsider what is marked wrong instead of resubmitting it.]\n"
+        "[REVIEW OF YOUR PREVIOUS ATTEMPT — per-dimension verdict below]\n"
         "Your previous submission:\n"
         f"  detection : {submission.get('is_anomaly')}\n"
         f"  root cause: {submission.get('root_cause_name', [])}\n"
@@ -314,7 +313,6 @@ def generate_feedback(
     return (
         f"{header}\n\n"
         f"[GUIDANCE — for the parts to fix only]\n{hint}\n\n"
-        "Re-investigate ONLY the parts to fix; keep the parts that look solid unless "
-        "you find clear evidence against them; then conclude with an updated "
-        "submission. Always submit your best hypothesis — never leave it empty."
+        "Now conclude with your updated submission — always submit your best "
+        "hypothesis, never leave it empty."
     )

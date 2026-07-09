@@ -287,10 +287,13 @@ class BasicReActAgent:
             # (``feedback`` already carries those). The tool digest is NOT shown
             # to the agent anymore — it stays on the coach side only.
             protocol = (
-                "[THIS IS A RETRY — refine, do NOT restart from scratch]\n"
-                "1. KEEP the confirmed dimensions: reuse your findings below, do not re-investigate them.\n"
-                "2. Use your tools ONLY on the to-fix dimension.\n"
-                "3. Submit the confirmed dimensions unchanged + the fixed one updated."
+                "[THIS IS A RETRY — keep what is confirmed, re-work what is marked wrong]\n"
+                "1. KEEP the confirmed dimensions: reuse your findings below and do not "
+                "re-investigate them unless something you find clearly contradicts them.\n"
+                "2. For each dimension marked wrong, re-open it: gather fresh evidence with "
+                "your tools — do NOT just resubmit your previous answer for it.\n"
+                "3. Conclude with a full submission: confirmed dimensions unchanged + the "
+                "reworked one(s) updated."
             )
             blocks = [
                 HumanMessage(content=state.get("task_description", "")),
