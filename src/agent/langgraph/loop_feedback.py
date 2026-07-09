@@ -186,7 +186,8 @@ def build_verdict(submission: dict, scores: tuple) -> tuple[str, list[str]]:
     rstat, rline = _rca_verdict(scores[6], scores[7], scores[8], len(submission.get("root_cause_name") or []))
 
     header = (
-        "[REVIEW OF YOUR PREVIOUS ATTEMPT — refine it, do NOT restart from zero]\n"
+        "[REVIEW OF YOUR PREVIOUS ATTEMPT — keep what is CONFIRMED below, and genuinely "
+        "reconsider what is marked wrong instead of resubmitting it.]\n"
         "Your previous submission:\n"
         f"  detection : {submission.get('is_anomaly')}\n"
         f"  root cause: {submission.get('root_cause_name', [])}\n"
@@ -264,20 +265,11 @@ def generate_feedback(
         header, to_fix = build_verdict(submission, scores)
 
     # Escalation: from the 2nd feedback on, if the root cause is still wrong,
-    # attach the leak-safe family differential to the header (never to `human`,
-    # never scrubbed). Earlier retries get only the soft coach hint.
+    # attach the leak-safe family differential to the header.
     if loop_count >= 2 and "root cause" in to_fix:
         card_body = family_differential(fault_family or "")
         if card_body:
-            # One merged block: the explicit redirect (Lever #2) and the differential
-            # list, so a weak agent gets a single coherent instruction instead of two
-            # overlapping headers. The redirect is what a weak model will not infer on
-            # its own — that the true cause must be one of the listed siblings — so it
-            # keeps picking off-list causes from the full catalog.
-            #
-            # Referencing the agent's previous guess is leak-safe: it was scored (so
-            # it is the agent's own word, not a GT token) and the "do NOT repeat it"
-            # exclusion only fires when it was scored fully WRONG.
+            # IF the family has multiple sub-causes, add a differential card to the header
             prev = ", ".join(str(x) for x in (submission.get("root_cause_name") or [])).strip()
             prev_txt = f"'{prev}'" if prev else "your previous guess"
             rca_prec = scores[6] if scores else 0.0
