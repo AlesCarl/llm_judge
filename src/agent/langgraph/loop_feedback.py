@@ -57,20 +57,19 @@ _CASE_FILE_CAP = 25
 
 
 _VERIFIER_SYSTEM = (
-    "You are an independent network fault verifier. A junior agent has "
-    "diagnosed a fault on a live network; you are given its claims. You do "
-    "NOT know the correct answer.\n"
-    "Your job: audit the claims against the live network with as few tool "
-    "calls as possible.\n"
-    "Method:\n"
-    "1. Pick the 2-4 claims that carry the diagnosis (the stated root cause, "
-    "the accused devices, the anomaly itself).\n"
-    "2. For each, run the single most direct check that could confirm or "
-    "refute it.\n"
-    "3. If a check refutes a claim, note what you observed instead.\n"
-    "Rules: read-only — only inspect, never fix or change anything; audit the "
-    "claims, do not re-diagnose the whole network.\n"
-    "Finish with a plain report, one line per claim:\n"
+    "You are an independent network fault verifier. You are given a junior "
+    "agent's diagnosis claims; you do NOT know the correct answer. Audit them "
+    "against the live network with as few read-only tool calls as possible — "
+    "inspect, never change; do not re-diagnose the whole network.\n"
+    "For the 2-4 claims that carry the diagnosis (root cause, accused devices, "
+    "the anomaly itself), run the single most direct check that could confirm "
+    "or refute each; if a check refutes one, note what you saw instead.\n"
+    "DEGENERATE CASE — if the submission claims NO anomaly (no cause AND no "
+    "devices) there is nothing to refute: instead try to POSITIVELY confirm "
+    "health — broad reachability between key endpoints + interface/service "
+    "status on core paths — and confirm only if the checks that matter pass. "
+    "Add a final line: HEALTH: CONFIRMED | UNCONFIRMED — <evidence>.\n"
+    "Finish with one line per claim:\n"
     "CLAIM: <claim> — CONFIRMED | REFUTED | COULD-NOT-CHECK — <evidence observed>"
 )
 
@@ -81,25 +80,33 @@ _COACH_SYSTEM = (
     "only whether each part of its answer is backed by the available evidence "
     "(the independent verification report, when present, outweighs the "
     "agent's own reasoning).\n"
+    "BURDEN OF PROOF — every dimension STARTS at WEAK. SUPPORTED = a positive, "
+    "specific check actively confirms it; UNSUPPORTED = a check contradicts it; "
+    "WEAK = plausible but unconfirmed. Absence of contradiction is NOT evidence "
+    "— never infer SUPPORTED from 'nothing disproved it'.\n"
     "Grade three dimensions:\n"
     "- detection: is the anomaly / no-anomaly call justified by evidence?\n"
     "- localization: are the accused devices actually implicated?\n"
     "- root_cause: does the evidence establish the named cause itself, or "
     "only a symptom of it?\n"
-    "Status meaning: SUPPORTED = direct evidence backs it; WEAK = plausible "
-    "but unverified; UNSUPPORTED = contradicted or no evidence.\n"
-    "Then write a hint (2-3 sentences) ONLY about the non-SUPPORTED "
-    "dimensions: name the missing check or the contradiction, concretely. "
-    "Never write the diagnosis for the agent.\n"
-    "Pick suspected_family: the fault family most consistent with the "
-    "evidence, chosen from KNOWN FAULT FAMILIES, or \"unsure\".\n"
-    "List up to 5 new_facts: short factual observations established this "
-    "attempt (device/interface states, outputs seen) — facts only, no "
-    "conclusions.\n"
+    "DEGENERATE CASE — a 'no anomaly' submission with no devices and no cause "
+    "makes NO falsifiable claim: grade all three WEAK, UNLESS the verifier "
+    "positively confirmed health. Set health_positively_confirmed=true ONLY if "
+    "the verification report contains an explicit 'HEALTH: CONFIRMED' line.\n"
+    "Write a hint (2-3 sentences) ONLY about the non-SUPPORTED dimensions: name "
+    "the missing check or the contradiction concretely; never write the "
+    "diagnosis for the agent.\n"
+    "Pick suspected_family: the fault family most consistent with the evidence, "
+    "from KNOWN FAULT FAMILIES, or \"unsure\".\n"
+    "List up to 5 new_facts: short factual observations established this attempt "
+    "(device/interface states, outputs seen) — facts only, no conclusions.\n"
+    "For each dimension write \"why\" (the evidence checked) BEFORE \"status\".\n"
     "Reply with ONLY this JSON (no other text):\n"
-    '{"detection": {"status": "...", "why": "..."}, '
-    '"localization": {"status": "...", "why": "..."}, '
-    '"root_cause": {"status": "...", "why": "..."}, '
+    '{"submission_had_concrete_claims": true, '
+    '"health_positively_confirmed": false, '
+    '"detection": {"why": "...", "status": "..."}, '
+    '"localization": {"why": "...", "status": "..."}, '
+    '"root_cause": {"why": "...", "status": "..."}, '
     '"suspected_family": "...", "new_facts": ["..."], "hint": "..."}'
 )
 
@@ -213,6 +220,8 @@ class CoachReview:
     hint: str = ""
     verification_report: str = ""
     verified: bool = False  # True when the tool-using verification pass ran
+    # Coach's self-report on the degenerate 'null answer' case (see review()).
+    health_confirmed: bool = False  # verifier positively confirmed a healthy net
 
     @property
     def approved(self) -> bool:
@@ -251,6 +260,20 @@ def _parse_review(text: str) -> CoachReview:
         suspected_family=str(data.get("suspected_family", "")).strip(),
         new_facts=[str(f).strip()[:160] for f in (data.get("new_facts") or []) if str(f).strip()][:5],
         hint=str(data.get("hint", "")).strip()[:800],
+        health_confirmed=bool(data.get("health_positively_confirmed", False)),
+    )
+
+
+def _is_null_answer(submission: dict) -> bool:
+    """True for a 'surrender' answer: no anomaly, no accused device, no cause.
+
+    Such a submission makes no falsifiable claim, so the coach must not be
+    allowed to mark it SUPPORTED just because nothing contradicted it.
+    """
+    return (
+        not submission.get("is_anomaly")
+        and not (submission.get("faulty_devices") or [])
+        and not (submission.get("root_cause_name") or [])
     )
 
 
@@ -353,6 +376,16 @@ class VerifierCoach:
         if no_submission:
             # No claims were made: nothing can be SUPPORTED.
             review.statuses = {dim: ("UNSUPPORTED", "no submission was made") for dim in _DIMS}
+        elif _is_null_answer(submission) and not review.health_confirmed:
+            # Deterministic guard (do not trust the LLM to apply this rule):
+            # a 'no anomaly / no device / no cause' answer makes no falsifiable
+            # claim, so "nothing disproved it" must NOT become SUPPORTED. Cap
+            # every SUPPORTED down to WEAK unless the verifier positively
+            # confirmed the network is healthy. Surrender != clean diagnosis.
+            review.statuses = {
+                dim: (("WEAK", "null answer: no positive proof of health") if st == "SUPPORTED" else (st, why))
+                for dim, (st, why) in review.statuses.items()
+            }
         return review
 
 
