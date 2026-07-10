@@ -100,6 +100,8 @@ _COACH_SYSTEM = (
     "from KNOWN FAULT FAMILIES, or \"unsure\".\n"
     "List up to 5 new_facts: short factual observations established this attempt "
     "(device/interface states, outputs seen) — facts only, no conclusions.\n"
+    "List in superseded_facts the text of any FACTS ALREADY ON RECORD that this "
+    "attempt's evidence now contradicts or makes outdated (empty if none).\n"
     "For each dimension write \"why\" (the evidence checked) BEFORE \"status\".\n"
     "Reply with ONLY this JSON (no other text):\n"
     '{"submission_had_concrete_claims": true, '
@@ -107,7 +109,8 @@ _COACH_SYSTEM = (
     '"detection": {"why": "...", "status": "..."}, '
     '"localization": {"why": "...", "status": "..."}, '
     '"root_cause": {"why": "...", "status": "..."}, '
-    '"suspected_family": "...", "new_facts": ["..."], "hint": "..."}'
+    '"suspected_family": "...", "new_facts": ["..."], '
+    '"superseded_facts": ["..."], "hint": "..."}'
 )
 
 
@@ -217,6 +220,7 @@ class CoachReview:
     statuses: dict[str, tuple[str, str]]  # dim -> (STATUS, why)
     suspected_family: str = ""
     new_facts: list[str] = field(default_factory=list)
+    superseded_facts: list[str] = field(default_factory=list)  # earlier facts now outdated
     hint: str = ""
     verification_report: str = ""
     verified: bool = False  # True when the tool-using verification pass ran
@@ -260,6 +264,7 @@ def _parse_review(text: str) -> CoachReview:
         statuses=statuses,
         suspected_family=str(data.get("suspected_family", "")).strip(),
         new_facts=[str(f).strip()[:160] for f in (data.get("new_facts") or []) if str(f).strip()][:5],
+        superseded_facts=[str(f).strip()[:160] for f in (data.get("superseded_facts") or []) if str(f).strip()][:5],
         hint=str(data.get("hint", "")).strip()[:800],
         health_confirmed=bool(data.get("health_positively_confirmed", False)),
     )
@@ -278,9 +283,22 @@ def _is_null_answer(submission: dict) -> bool:
     )
 
 
-def merge_case_file(existing: list[str], new_facts: list[str]) -> list[str]:
-    """Append non-duplicate facts; keep the newest _CASE_FILE_CAP entries."""
-    merged = list(existing)
+def _fact_superseded(fact: str, superseded: list[str]) -> bool:
+    """Best-effort match of a stored fact against the coach's superseded list.
+
+    Substring both ways so a paraphrase still matches; on no match the fact is
+    kept (degrades to the old behaviour — supersession never loses a fact wrongly).
+    """
+    fl = fact.lower()
+    return any(s and (s.lower() in fl or fl in s.lower()) for s in superseded)
+
+
+def merge_case_file(
+    existing: list[str], new_facts: list[str], superseded: list[str] | None = None
+) -> list[str]:
+    """Drop coach-flagged superseded facts, append new non-duplicates, cap to newest."""
+    superseded = superseded or []
+    merged = [f for f in existing if not _fact_superseded(f, superseded)]
     seen = {f.lower() for f in merged}
     for fact in new_facts:
         if fact.lower() not in seen:
@@ -340,6 +358,7 @@ class VerifierCoach:
         diagnosis_report: str,
         digest: str,
         no_submission: bool,
+        case_file: list[str] | None = None,
     ) -> CoachReview:
         """Full review pass: (verify) + grade + hint + facts."""
         verification_report = ""
@@ -357,12 +376,14 @@ class VerifierCoach:
                 f"  accused devices : {submission.get('faulty_devices', [])}"
             )
         )
+        on_record = "\n".join(f"- {f}" for f in (case_file or [])) or "(none)"
         human = (
             f"TASK GIVEN TO THE AGENT:\n{task_description[:600]}\n\n"
             f"AGENT'S SUBMISSION:\n{sub_txt}\n\n"
             f"AGENT'S REASONING:\n{(diagnosis_report or '(none)')[:2200]}\n\n"
             f"AGENT'S TOOL ACTIVITY:\n{digest[:2500]}\n\n"
             f"INDEPENDENT VERIFICATION REPORT:\n{verification_report or '(not available)'}\n\n"
+            f"FACTS ALREADY ON RECORD (earlier rounds):\n{on_record}\n\n"
             f"KNOWN FAULT FAMILIES: {', '.join(known_families())}\n\n"
             "Write the JSON review now."
         )
@@ -405,36 +426,35 @@ def compose_feedback(
     submission: dict,
     no_submission: bool,
 ) -> str:
-    """Assemble the retry message from the coach review (no GT anywhere)."""
-    if no_submission:
-        parts = [
-            "[REVIEW — you ran out of budget WITHOUT submitting]\n"
-            "You never concluded last time. Commit to your best hypothesis "
-            "earlier this time instead of exhausting the step budget."
-        ]
-    else:
-        verdict_lines = []
-        for dim in ("detection", "root_cause", "localization"):
-            status, why = review.statuses[dim]
-            verdict_lines.append(f"  - {_DIM_LABELS[dim]}: {status}" + (f" — {why}" if why else ""))
-        parts = [
-            "[REVIEW OF YOUR PREVIOUS ATTEMPT — an independent reviewer graded each "
-            "dimension on EVIDENCE (it does not know the answer)]\n"
-            "Your previous submission:\n"
-            f"  detection : {submission.get('is_anomaly')}\n"
-            f"  root cause: {submission.get('root_cause_name', [])}\n"
-            f"  devices   : {submission.get('faulty_devices', [])}\n\n"
-            "Verdict (SUPPORTED = evidence backs it, keep it; WEAK/UNSUPPORTED = re-work it):\n"
-            + "\n".join(verdict_lines)
-        ]
+    """Assemble the self-framed retry REVIEW block from the coach review (no GT).
 
-    if review.verification_report:
-        parts.append(
-            "[VERIFIER OBSERVATIONS — checks run against the live network]\n"
-            + review.verification_report[:900]
+    Only the review lives here; the caller appends the case-file facts, the tool
+    digest and the closing action line. The keep/rework instruction and the
+    grounded evidence each appear exactly once (no verifier block: the verifier's
+    finding is already distilled into each dimension's ``why``).
+    """
+    if no_submission:
+        return (
+            "[RETRY — last time you ran out of budget WITHOUT submitting]\n"
+            "You never concluded. Commit to your best hypothesis earlier this time "
+            "instead of exhausting the step budget."
         )
 
+    verdict_lines = []
+    for dim in ("detection", "root_cause", "localization"):
+        status, why = review.statuses[dim]
+        verdict_lines.append(f"  - {_DIM_LABELS[dim]}: {status}" + (f" — {why}" if why else ""))
+    block = (
+        "[RETRY — an independent reviewer (it does NOT know the answer) graded your "
+        "previous attempt on evidence. KEEP the SUPPORTED dimensions; RE-WORK the "
+        "WEAK/UNSUPPORTED ones by gathering the missing evidence with your tools — "
+        "do not resubmit them unverified.]\n"
+        "Your previous answer:\n"
+        f"  detection : {submission.get('is_anomaly')}\n"
+        f"  root cause: {submission.get('root_cause_name', [])}\n"
+        f"  devices   : {submission.get('faulty_devices', [])}\n\n"
+        "Reviewer verdict:\n" + "\n".join(verdict_lines)
+    )
     if review.hint:
-        parts.append(f"[GUIDANCE — for the non-SUPPORTED parts only]\n{review.hint}")
-
-    return "\n\n".join(parts)
+        block += f"\n\n[GUIDANCE — for the non-SUPPORTED parts only]\n{review.hint}"
+    return block

@@ -64,10 +64,6 @@ class AgentState(TypedDict):
         default="",
         description="Coach review (verdicts + hint) injected into the next diagnosis attempt.",
     )
-    attempt_findings: str = Field(
-        default="",
-        description="Agent's own diagnosis report from the previous attempt (for retry continuity).",
-    )
     case_file: list[str] = Field(
         default=[],
         description="Cross-attempt evidence ledger: coach-extracted facts (no conclusions).",
@@ -299,52 +295,48 @@ class BasicReActAgent:
 
 
     async def diagnosis_agent_builder(self, state: AgentState):
+        # On a retry, capture the PREVIOUS attempt's tool digest BEFORE writing
+        # the new attempt marker (attempt_digest slices at the last marker).
+        feedback = state.get("judge_feedback", "")
+        prev_digest = attempt_digest(self.session_dir, max_calls=999) if feedback else ""
+
         # Per-attempt marker: lets attempt_digest() slice messages.jsonl to
         # the current attempt only (the file accumulates across attempts).
         MessageLogger(agent="system", session_dir=self.session_dir).log(
             "attempt_start", {"loop": state.get("loop_count", 0)}
         )
-        # On a retry the coach has left an evidence-based review: reset the
-        # conversation to [task] + [protocol] + [case file] + [own findings] +
-        # [review] instead of replaying the full (rabbit-hole) history.
-        feedback = state.get("judge_feedback", "")
+        # Retry: rebuild a compact, non-redundant context instead of replaying the
+        # full (rabbit-hole) history. Order: task → self-framed review (verdict +
+        # hint) → reviewer facts (all rounds) → what the agent itself already
+        # checked (last round, deterministic) → one closing action line.
         if feedback:
             case_file = state.get("case_file") or []
-            # Retry context: a short imperative protocol frames the review.
-            # The verdicts come from an evidence-based reviewer (no answer
-            # key), so SUPPORTED means "well backed", not "guaranteed right".
-            protocol_lines = [
-                "[THIS IS A RETRY — an independent reviewer graded your previous answer "
-                "on evidence; it does NOT know the correct answer]",
-                "1. Dimensions graded SUPPORTED: keep them; re-investigate only if new "
-                "evidence clearly contradicts them.",
-                "2. Dimensions graded WEAK or UNSUPPORTED: re-open them — gather the "
-                "missing evidence with your tools; do not resubmit the same answer "
-                "unverified.",
-            ]
-            if case_file:
-                protocol_lines.append(
-                    "3. Trust the CASE FILE facts below — do not spend steps re-running "
-                    "checks that already established them."
-                )
-            protocol_lines.append(
-                f"{len(protocol_lines)}. Conclude with a full submission: kept dimensions "
-                "unchanged + the re-worked one(s) updated — always submit your best "
-                "hypothesis, never leave it empty."
-            )
             blocks = [
                 HumanMessage(content=state.get("task_description", "")),
-                HumanMessage(content="\n".join(protocol_lines)),
+                HumanMessage(content=feedback),
             ]
             if case_file:
                 facts = "\n".join(f"- {f}" for f in case_file)
                 blocks.append(
-                    HumanMessage(content=f"[CASE FILE — facts established in previous attempts]\n{facts}")
+                    HumanMessage(
+                        content=f"[Facts noted by the reviewer (earlier rounds)]\n{facts}"
+                    )
                 )
-            findings = (state.get("attempt_findings") or "").strip()[:2500]
-            if findings:
-                blocks.append(HumanMessage(content=f"[WHAT YOU FOUND LAST TIME]\n{findings}"))
-            blocks.append(HumanMessage(content=feedback))
+            if prev_digest:
+                blocks.append(
+                    HumanMessage(
+                        content=f"[WHAT YOU ALREADY CHECKED — your tools last round]\n{prev_digest}"
+                    )
+                )
+            blocks.append(
+                HumanMessage(
+                    content=(
+                        "Now: re-open ONLY the WEAK/UNSUPPORTED dimensions with your tools, "
+                        "keep the SUPPORTED ones, then submit a full best-hypothesis answer "
+                        "— never leave it empty."
+                    )
+                )
+            )
             messages = blocks
         else:
             messages = state["messages"]
@@ -442,6 +434,7 @@ class BasicReActAgent:
             diagnosis_report=diagnosis_report,
             digest=attempt_digest(self.session_dir),
             no_submission=no_submission,
+            case_file=state.get("case_file") or [],
         )
 
         # Debug artifact: full coach review for this attempt (raw + parsed).
@@ -466,8 +459,9 @@ class BasicReActAgent:
             "loop_count": loop_count,
             "resolved": False,
             "judge_feedback": feedback,
-            "attempt_findings": diagnosis_report,
-            "case_file": merge_case_file(state.get("case_file") or [], review.new_facts),
+            "case_file": merge_case_file(
+                state.get("case_file") or [], review.new_facts, superseded=review.superseded_facts
+            ),
         }
 
 
@@ -484,6 +478,7 @@ class BasicReActAgent:
                 "statuses": {dim: {"status": st, "why": why} for dim, (st, why) in review.statuses.items()},
                 "suspected_family": review.suspected_family,
                 "new_facts": review.new_facts,
+                "superseded_facts": review.superseded_facts,
                 "hint": review.hint,
                 "health_confirmed": review.health_confirmed,
                 "verified": review.verified,
