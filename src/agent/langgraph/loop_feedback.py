@@ -222,6 +222,7 @@ class CoachReview:
     verified: bool = False  # True when the tool-using verification pass ran
     # Coach's self-report on the degenerate 'null answer' case (see review()).
     health_confirmed: bool = False  # verifier positively confirmed a healthy net
+    raw: str = ""  # raw LLM grade reply, kept for debugging (parse failures etc.)
 
     @property
     def approved(self) -> bool:
@@ -370,7 +371,9 @@ class VerifierCoach:
                 SystemMessage(content=_COACH_SYSTEM),
                 HumanMessage(content=human),
             ])
-        review = _parse_review(str(getattr(response, "content", "")))
+        raw = str(getattr(response, "content", ""))
+        review = _parse_review(raw)
+        review.raw = raw
         review.verification_report = verification_report
         review.verified = verified
         if no_submission:

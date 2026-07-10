@@ -444,6 +444,9 @@ class BasicReActAgent:
             no_submission=no_submission,
         )
 
+        # Debug artifact: full coach review for this attempt (raw + parsed).
+        self._dump_coach_review(loop_count, review)
+
         resolved = (not no_submission) and review.approved
         self._log_loop_attempt(
             loop_count,
@@ -467,6 +470,30 @@ class BasicReActAgent:
             "case_file": merge_case_file(state.get("case_file") or [], review.new_facts),
         }
 
+
+    def _dump_coach_review(self, loop_count, review):
+        """Persist the full coach review for this attempt (debug artifact).
+
+        Not consumed by any downstream code — the raw grade JSON is otherwise
+        lost (the grading LLM call bypasses the message logger). Writes both the
+        parsed fields and the raw reply so parse failures are inspectable.
+        """
+        try:
+            out = {
+                "attempt": loop_count,
+                "statuses": {dim: {"status": st, "why": why} for dim, (st, why) in review.statuses.items()},
+                "suspected_family": review.suspected_family,
+                "new_facts": review.new_facts,
+                "hint": review.hint,
+                "health_confirmed": review.health_confirmed,
+                "verified": review.verified,
+                "verification_report": review.verification_report,
+                "raw": review.raw,
+            }
+            path = Path(self.session_dir) / f"coach_review_attempt_{loop_count}.json"
+            path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:  # debug dump must never break the loop
+            pass
 
     def _log_loop_attempt(self, loop_count, no_submission, stop_reason=None, review=None):
         """Append a per-attempt record to loop_log.json (dataset for iteration curves).
