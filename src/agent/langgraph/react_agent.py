@@ -19,6 +19,7 @@ from agent.langgraph.domain_agents.diagnosis_agent import DiagnosisAgent
 from agent.langgraph.domain_agents.submission_agent import SubmissionAgent
 from agent.langgraph.loop_feedback import (
     VerifierCoach,
+    _is_null_answer,
     attempt_digest,
     compose_feedback,
     merge_case_file,
@@ -440,7 +441,8 @@ class BasicReActAgent:
         # Debug artifact: full coach review for this attempt (raw + parsed).
         self._dump_coach_review(loop_count, review)
 
-        resolved = (not no_submission) and review.approved
+      
+        resolved = (not no_submission) and review.approved and not _is_null_answer(submission)
         self._log_loop_attempt(
             loop_count,
             no_submission,

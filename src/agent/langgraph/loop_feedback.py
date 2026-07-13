@@ -69,15 +69,21 @@ _VERIFIER_SYSTEM = (
     "refutes it (reachability varies by path and timing) — mark REFUTED only "
     "after reproducing the reported symptom from the accused devices, else "
     "COULD-NOT-CHECK.\n"
-    "If the accused state is something another device or service provides "
-    "(an address, a route, a name, a lease), check that provider too: provider "
-    "broken → cause REFUTED; provider healthy → the cause stands.\n"
+    "When the claimed cause is itself a broken state (a missing or wrong "
+    "address, route, name, lease), the most direct check IS its provider: a "
+    "serving daemon, a peer, or the local static config. Provider down = the "
+    "claim is only an effect, REFUTED; provider serving correctly = the cause "
+    "stands. A broken local config counts as the provider being down, not "
+    "healthy.\n"
     "DEGENERATE CASE — if the submission claims NO anomaly (no cause AND no "
-    "devices) there is nothing to refute: instead try to POSITIVELY confirm "
-    "health — broad reachability between key endpoints + interface/service "
-    "status on core paths — and confirm only if the checks that matter pass. "
+    "devices) there is nothing to refute: instead try to DISPROVE health by "
+    "probing what the agent's reasoning never examined — hosts or segments it "
+    "did not mention — rather than re-confirming paths it already saw. Confirm "
+    "health only if those blind-spot checks ALSO pass (reachability, interface/"
+    "service status, name-resolution and default-route from an end host). "
     "Add a final line: HEALTH: CONFIRMED | UNCONFIRMED — <evidence>.\n"
-    "Finish with one line per claim:\n"
+    "Finish with one line per claim (mark CONFIRMED only when the state you "
+    "observed is the exact one named in the claim, not merely some fault):\n"
     "CLAIM: <claim> — CONFIRMED | REFUTED | COULD-NOT-CHECK — <evidence observed>"
 )
 
@@ -95,9 +101,14 @@ _COACH_SYSTEM = (
     "Grade three dimensions:\n"
     "- detection: is the anomaly / no-anomaly call justified by evidence?\n"
     "- localization: are the accused devices actually implicated?\n"
-    "- root_cause: does the evidence establish the named cause itself, or "
-    "only a symptom of it? SUPPORTED only if the evidence separates the cause "
-    "from a provider that could produce the same state.\n"
+    "- root_cause: SUPPORTED only if the evidence shows the NAMED state "
+    "itself AND that it is not just the effect of something upstream: a cause "
+    "that re-states the symptom with its provider never checked stays WEAK; "
+    "evidence showing a DIFFERENT broken state than the named one is a "
+    "contradiction = UNSUPPORTED, and the hint must name what was seen.\n"
+    "SCOPE — a refutation observed only on the accused devices refutes "
+    "localization, not the mechanism: grade root_cause WEAK there and hint "
+    "to test the same mechanism on sibling devices before abandoning it.\n"
     "DEGENERATE CASE — a 'no anomaly' submission with no devices and no cause "
     "makes NO falsifiable claim: grade all three WEAK, UNLESS the verifier "
     "positively confirmed health. Set health_positively_confirmed=true ONLY if "
@@ -121,6 +132,12 @@ _COACH_SYSTEM = (
     '"suspected_family": "...", "new_facts": ["..."], '
     '"superseded_facts": ["..."], "hint": "..."}'
 )
+
+
+def _head_tail(s: str, head: int = 700, tail: int = 800) -> str:
+    """Keep the report's head AND tail: the CLAIM/HEALTH verdict lines the
+    coach grades on live at the end and must survive truncation."""
+    return s if len(s) <= head + tail else s[:head] + "\n…\n" + s[-tail:]
 
 
 # --------------------------------------------------------------------------
@@ -353,7 +370,7 @@ class VerifierCoach:
                     "recursion_limit": self.verify_budget,
                 },
             )
-            return _strip_think(str(result["messages"][-1].content))[:1500]
+            return _head_tail(_strip_think(str(result["messages"][-1].content)))
         except GraphRecursionError:
             return "(verification ran out of budget before completing)"
         except Exception as exc:  # audit must never kill the loop
@@ -406,6 +423,9 @@ class VerifierCoach:
         review.raw = raw
         review.verification_report = verification_report
         review.verified = verified
+        # Deterministic gate: never trust the LLM's health flag unless the
+        # verifier actually wrote the confirmation line it is keyed to.
+        review.health_confirmed = review.health_confirmed and ("HEALTH: CONFIRMED" in verification_report)
         if no_submission:
             # No claims were made: nothing can be SUPPORTED.
             review.statuses = {dim: ("UNSUPPORTED", "no submission was made") for dim in _DIMS}
