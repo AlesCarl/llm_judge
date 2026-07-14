@@ -78,14 +78,14 @@ class LLMJudge(BaseJudge):
                 trace = f.read()
             trace = self._parse_trace(trace)
 
-            self.prompt = self.prompt.format(
+            prompt = self.prompt.format(
                 ground_truth=ground_truth,
                 trace=trace,
             )
             meter = new_meter()
             with tracing_context(enabled=False):
                 evaluation: JudgeResponse = self.llm.invoke(
-                    self.prompt, config=meter_config(meter)
+                    prompt, config=meter_config(meter)
                 )
 
             # Save evaluation result to file

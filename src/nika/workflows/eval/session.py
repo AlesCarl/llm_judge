@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import textwrap
 import time
 from pathlib import Path
@@ -79,6 +80,36 @@ def run_eval_metrics(*, session_id: str | None = None) -> None:
     log_event("eval_metrics_saved", f"Wrote numeric eval metrics to {out_path}", session_id=session.session_id)
 
 
+def _first_attempt_trace(session_dir: str) -> str | None:
+    """Write an attempt-1-only slice of ``messages.jsonl`` for the PRE-feedback judge.
+
+    The diagnosis node writes an ``attempt_start`` marker at the top of every
+    attempt (loop 0 included). Cutting the trace just before the 2nd marker
+    leaves exactly the first attempt — whose final submission is the
+    pre-feedback answer. Returns the slice path, or ``None`` when the run had a
+    single attempt (no feedback happened → PRE == POST, caller copies instead).
+    """
+    src = Path(session_dir) / MESSAGES_FILENAME
+    if not src.exists():
+        return None
+    lines = src.read_text(encoding="utf-8").splitlines()
+    marks = []
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            if json.loads(line).get("event") == "attempt_start":
+                marks.append(i)
+        except Exception:
+            continue
+    if len(marks) < 2:
+        return None
+    out = Path(session_dir) / "messages_attempt1.jsonl"
+    out.write_text("\n".join(lines[: marks[1]]), encoding="utf-8")
+    return str(out)
+
+
 def run_llm_judge(
     judge_llm_backend: str,
     judge_model: str,
@@ -107,39 +138,61 @@ def run_llm_judge(
     trace_path = os.path.join(session.session_dir, MESSAGES_FILENAME)
     logger.info(f"Evaluating session {session.session_id} using LLM-as-Judge (judge_type={judge_type}).")
 
-    if judge_type == "multi":
-        llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
-    elif judge_type == "multi_role":
-        llm_judge = MultiRoleDebateJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    gt_text = textwrap.dedent(
+        f"""\
+            The root cause is {gt["root_cause_name"]}.
+            The faulty devices are: {", ".join(gt["faulty_devices"])}.
+        """
+    )
+
+    def _make_judge():
+        # A fresh instance per call: ``LLMJudge.evaluate_agent`` mutates
+        # ``self.prompt`` in place, so the same object cannot judge two traces.
+        if judge_type == "multi":
+            return MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+        if judge_type == "multi_role":
+            return MultiRoleDebateJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+        return LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+
+    def _judge_trace(trace: str, filename: str, *, run_meta_key: str | None = None) -> None:
+        """Judge one trace into ``filename`` (offline); stamp eval_time; log parse errors."""
+        start_time = time.time()
+        try:
+            _make_judge().evaluate_agent(
+                ground_truth=gt_text,
+                trace_path=trace,
+                save_path=f"{session.session_dir}/{filename}",
+            )
+            eval_time = round(time.time() - start_time, 2)
+            logger.info(f"LLM Judge ({filename}) eval time: {eval_time}s")
+
+            judge_path = Path(session.session_dir) / filename
+            if judge_path.exists():
+                data = json.loads(judge_path.read_text(encoding="utf-8"))
+                data["eval_time"] = eval_time
+                judge_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                if run_meta_key:
+                    session.update_run_meta(run_meta_key, data)
+        except OutputParserException as exc:
+            eval_time = round(time.time() - start_time, 2)
+            logger.warning(f"LLM Judge ({filename}) output not parseable as JSON; saved as .md. ({eval_time}s)")
+            md_path = Path(session.session_dir) / filename.replace(".json", ".md")
+            md_path.write_text(exc.llm_output, encoding="utf-8")
+
+    # POST-feedback: the full trace (all attempts → final submission).
+    _judge_trace(trace_path, "llm_judge.json", run_meta_key="llm_judge")
+
+    # PRE-feedback: attempt-1 slice (its last submission is the pre-feedback
+    # answer). Computed fully offline from the same artifacts. Single-attempt
+    # runs had no feedback, so PRE just mirrors POST.
+    pre_trace = _first_attempt_trace(session.session_dir)
+    pre_path = Path(session.session_dir) / "PRE_llm_judge.json"
+    if pre_trace:
+        _judge_trace(pre_trace, "PRE_llm_judge.json")
     else:
-        llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
-
-    start_time = time.time()
-    try:
-        llm_judge.evaluate_agent(
-            ground_truth=textwrap.dedent(
-                f"""\
-                    The root cause is {gt["root_cause_name"]}.
-                    The faulty devices are: {", ".join(gt["faulty_devices"])}.
-                """
-            ),
-            trace_path=trace_path,
-            save_path=f"{session.session_dir}/llm_judge.json",
-        )
-        eval_time = round(time.time() - start_time, 2)
-        logger.info(f"LLM Judge eval time: {eval_time}s")
-
-        judge_path = Path(session.session_dir) / "llm_judge.json"
-        if judge_path.exists():
-            data = json.loads(judge_path.read_text(encoding="utf-8"))
-            data["eval_time"] = eval_time
-            judge_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            session.update_run_meta("llm_judge", data)
-    except OutputParserException as exc:
-        eval_time = round(time.time() - start_time, 2)
-        logger.warning(f"LLM Judge output not parseable as JSON; saved as .md. ({eval_time}s)")
-        md_path = Path(session.session_dir) / "llm_judge.md"
-        md_path.write_text(exc.llm_output, encoding="utf-8")
+        post_path = Path(session.session_dir) / "llm_judge.json"
+        if post_path.exists():
+            shutil.copyfile(post_path, pre_path)
 
 
 def publish_session_eval(*, session_id: str | None = None) -> None:

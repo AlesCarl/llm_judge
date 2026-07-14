@@ -48,14 +48,13 @@ class AgentState(TypedDict):
         default=False,
         description="Indicates whether the agent has reached the maximum number of steps allowed.",
     )
-    # --- retry-loop fields (used only when max_loops > 1) ---
     task_description: str = Field(
         default="",
         description="Original task text, re-presented to the agent on each retry.",
     )
     loop_count: int = Field(
         default=0,
-        description="Number of completed diagnosis→submission→judge attempts.",
+        description="Number of completed diagnosis-submission-judge attempts.",
     )
     resolved: bool = Field(
         default=False,
