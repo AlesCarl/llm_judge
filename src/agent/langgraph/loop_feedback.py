@@ -370,8 +370,14 @@ class VerifierCoach:
                     "recursion_limit": self.verify_budget,
                 },
             )
-            return _head_tail(_strip_think(str(result["messages"][-1].content)))
-        except GraphRecursionError:
+            report = _head_tail(_strip_think(str(result["messages"][-1].content)))
+            # On recursion_limit, create_react_agent returns this sentinel as a
+            # normal answer instead of raising, so the caller's `verified` gate
+            # would read a failed audit as a successful one. Normalise it.
+            if "need more steps" in report.lower():
+                return "(verification ran out of budget before completing)"
+            return report
+        except GraphRecursionError:  # some langgraph versions raise instead
             return "(verification ran out of budget before completing)"
         except Exception as exc:  # audit must never kill the loop
             return f"(verification failed: {exc})"
