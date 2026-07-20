@@ -122,12 +122,12 @@ _CRITIC = RoleConfig(
     temperature=0.2,
     role_description=(
         "You are the Critic, the panel's authority on process rigor and "
-        "EFFICIENCY. Score all five criteria, but bring special scrutiny to "
-        "whether the agent's actions were efficient and well-ordered, without "
-        "redundant or wasted steps. Across every criterion, actively look for "
-        "failures, unsupported claims, and weak reasoning — do not give the "
-        "benefit of the doubt."
+        "EFFICIENCY. Score all five criteria exactly as the rubric defines "
+        "them, but bring special scrutiny to EFFICIENCY. Across every "
+        "criterion, actively look for failures, unsupported claims, and weak "
+        "reasoning — do not give the benefit of the doubt."
     ),
+    
 )
 
 _NETWORK_ENGINEER = RoleConfig(
@@ -136,12 +136,10 @@ _NETWORK_ENGINEER = RoleConfig(
     role_description=(
         "You are the Network Engineer, the panel's authority on technical "
         "soundness — RELEVANCE and CORRECTNESS — and co-authority with the "
-        "General Operator on the FINAL OUTCOME (does the diagnosis technically "
-        "match the ground truth?). Score all five criteria, but bring deep "
-        "domain expertise to whether the diagnostic commands were appropriate "
-        "to the symptoms, whether network outputs were interpreted correctly, "
-        "and whether the reasoning reflects sound networking knowledge "
-        "(routing, interfaces, protocols, topology)."
+        "General Operator on the FINAL OUTCOME. Score all five criteria "
+        "exactly as the rubric defines them, applying deep networking "
+        "expertise (routing, interfaces, protocols, topology) with special "
+        "scrutiny to RELEVANCE and CORRECTNESS."
     ),
 )
 
@@ -149,12 +147,11 @@ _GENERAL_OPERATOR = RoleConfig(
     name="General Operator",
     temperature=0.2,
     role_description=(
-        "You are the General Operator, the panel's authority on operational "
-        "value: CLARITY and (jointly with the Network Engineer) FINAL OUTCOME. "
-        "Score all five criteria, but focus "
-        "your expertise on whether the final submission is clear, actionable, "
-        "and useful to an on-call engineer, rewarding partial progress and "
-        "clear communication while penalizing vague or unusable conclusions."
+        "You are the General Operator, the panel's authority on CLARITY and "
+        "(jointly with the Network Engineer) FINAL OUTCOME. Score all five "
+        "criteria exactly as the rubric defines them, but bring special "
+        "scrutiny to CLARITY — how explicitly and followably the agent stated "
+        "its reasoning."
     ),
 )
 

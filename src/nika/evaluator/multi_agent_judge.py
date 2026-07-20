@@ -55,8 +55,8 @@ _CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome
 _CONSENSUS_THRESHOLD = 1
 
 # temperatures for the two opposing roles
-_CRITIC_TEMPERATURE = 0.1
-_ADVOCATE_TEMPERATURE = 0.1
+_CRITIC_TEMPERATURE = 0.2
+_ADVOCATE_TEMPERATURE = 0.2
 
 
 ##  Debate player 
@@ -111,7 +111,7 @@ class DebatePlayer:
 class MultiAgentJudge(BaseJudge):
     """
 
-    A Critic (low temperature, strict) and an Advocate (higher temperature, lenient)
+    A Critic (strict) and an Advocate ( lenient)
     independently evaluate the trace, then exchange rebuttals for up to max_rounds.
 
     Consensus is purely numerical: the debate stops as soon as every criterion is

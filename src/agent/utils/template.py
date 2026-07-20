@@ -4,23 +4,36 @@
 # reflect the architecture, not the prompt wording. Keep it free of '{', '}'
 # and '$' so it can be concatenated into both str.format() and string.Template
 # prompts without escaping.
+
 CRITERIA_RUBRIC = """\
-Assess the agent on these five criteria. Score each from 1 to 5 (1 = poor, 5 = excellent):
+Assess the agent on these five criteria. Score each from 1 to 5 (1 = poor, 5 = excellent).
+Criteria 1-4 judge the agent's decision-making process, considering only the information
+available to it at each step; only criterion 5 judges the outcome against the ground truth.
 
 1. Relevance — how relevant the agent's actions were to the stated problem.
-   5 = every action targeted the actual problem; 3 = mix of on-point and off-target actions; 1 = actions largely unrelated.
+   5 = every action targeted the stated problem;
+   3 = mix of on-point and off-target actions;
+   1 = actions largely unrelated, or aimless.
 
 2. Correctness — whether the tools/commands were used correctly and their outputs interpreted soundly.
-   5 = correct tools, correct usage, correct interpretation; 3 = minor errors or misreadings; 1 = wrong tools or fundamentally wrong interpretation.
+   5 = correct tools, correct usage, correct interpretation;
+   3 = minor errors or misreadings;
+   1 = wrong tools or fundamentally wrong interpretation.
 
 3. Efficiency — how efficient and well-ordered the actions were, without redundant or wasted steps.
-   5 = direct, no wasted steps; 3 = some redundancy or detours; 1 = highly redundant or aimless.
+   5 = no repeated steps, sensible order;
+   3 = some repeated steps or avoidable back-tracking;
+   1 = highly redundant or repetitive.
 
 4. Clarity — how clear and well-explained the agent's reasoning and justifications were.
-   5 = reasoning explicit and easy to follow; 3 = partially explained; 1 = opaque or absent.
+   5 = reasoning explicit and easy to follow, even if wrong;
+   3 = partially explained;
+   1 = opaque, or no reasoning stated.
 
 5. Final Outcome — whether the agent produced a final submission AND it matches the ground truth (root cause and faulty devices).
-   5 = submission exists and fully matches; 3 = submission exists but partially correct or incomplete; 1 = no submission, or it is wrong.
+   5 = submission exists and fully matches;
+   3 = submission exists but partially correct or incomplete;
+   1 = no submission, or it is wrong.
 """
 
 
@@ -40,7 +53,6 @@ Instructions:
 
 
 
-## da provare ... e migliorare --- sono una bozza
 
 
 ## CRITIC_SYSTEM_PROMPT / ADVOCATE_SYSTEM_PROMPT -- al posto di uno solo
