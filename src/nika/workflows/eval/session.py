@@ -8,6 +8,7 @@ from pathlib import Path
 
 from langchain_core.exceptions import OutputParserException
 
+from nika.evaluator.agent_judge import AgentAsJudge
 from nika.evaluator.llm_judge import LLMJudge
 from nika.evaluator.multi_agent_judge import MultiAgentJudge
 from nika.evaluator.multi_role_debate.multi_role_debate_judge import MultiRoleDebateJudge
@@ -130,9 +131,11 @@ def run_llm_judge(
         judge_llm_backend: LLM provider (openai, ollama, deepseek).
         judge_model: Model id for the chosen backend.
         judge_type: ``single`` for LLMJudge, ``multi`` for MultiAgentJudge
-            (Critic/Advocate debate with consensus + synthesis), or
+            (Critic/Advocate debate with consensus + synthesis),
             ``multi_role`` for MultiRoleDebateJudge (ChatEval-style N-role
-            sequential debate with numeric aggregation).
+            sequential debate with numeric aggregation), or ``agent`` for
+            AgentAsJudge (tool-grounded verification of the session's own
+            trace, then GT-aware scoring).
         session_id: Target session id (auto-detected when only one closed).
     """
     session = Session()
@@ -149,6 +152,8 @@ def run_llm_judge(
         llm_judge = MultiAgentJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
     elif judge_type == "multi_role":
         llm_judge = MultiRoleDebateJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
+    elif judge_type == "agent":
+        llm_judge = AgentAsJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
     else:
         llm_judge = LLMJudge(judge_llm_backend=judge_llm_backend, judge_model=judge_model)
 

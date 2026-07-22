@@ -182,10 +182,11 @@ SYNTHESIS_PROMPT = """\
 [Debaters' Final Scores]
 {debater_votes}
 
+""" + CRITERIA_RUBRIC + """
 {mode_instruction}
 
 Produce the definitive structured evaluation of the agent's performance, grounded in the
-evidence above.
+evidence above and scored strictly according to the rubric.
 
 You MUST respond with a valid JSON object only — no markdown, no extra text, no code blocks.
 The JSON must follow exactly this structure:
