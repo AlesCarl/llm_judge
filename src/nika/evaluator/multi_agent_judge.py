@@ -267,6 +267,15 @@ class MultiAgentJudge(BaseJudge):
             )
         return result
 
+    @staticmethod
+    def _strip_reasoning(assessment_json: str) -> str:
+        """Drop the top-level `reasoning` field before exposing an assessment
+        to the other debater in a rebuttal round (keeps only per-criterion
+        scores/comments — the actual arguable content)."""
+        data = json.loads(assessment_json)
+        data.pop("reasoning", None)
+        return json.dumps(data, indent=2)
+
     def _build_transcript(self, rounds: list[dict]) -> str:
         lines = []
         for r in rounds:
@@ -340,7 +349,7 @@ class MultiAgentJudge(BaseJudge):
 
             for i, debater in enumerate(debaters):
                 other_text = "\n\n---\n\n".join(
-                    f"[{debaters[j].name}]\n{a}"
+                    self._strip_reasoning(a)
                     for j, a in enumerate(current_assessments)
                     if j != i
                 )
