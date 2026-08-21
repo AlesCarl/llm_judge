@@ -116,30 +116,6 @@ Respond with ONLY a JSON object in the same structure as before — no markdown,
 
 
 
-# MODERATOR_SYSTEM_PROMPT = (
-#     "You are the moderator of an expert judge panel evaluating a network troubleshooting agent. "
-#     "Your task is to determine whether the panel has reached sufficient consensus on the "
-#     "criteria where scores still diverge."
-# )
-#
-#
-# MODERATOR_PROMPT = """\
-# The panel members' scores differ on the following criteria (scores shown per member):
-# {divergent_criteria}
-#
-# Here are their full assessments for context:
-#
-# {assessments}
-#
-# Determine whether the reasoning behind these divergent scores is fundamentally aligned \
-# (members agree on the facts but weight them differently) or genuinely conflicting \
-# (members interpret the evidence differently).
-#
-# Respond with ONLY a JSON object — no markdown, no extra text:
-# {{"consensus": true or false, "summary": "brief explanation of agreements and remaining disagreements"}}\
-# """
-
-
 
 SYNTHESIS_SYSTEM_PROMPT = (
     "You are the final judge of an expert panel evaluating a network troubleshooting agent. "
@@ -149,24 +125,31 @@ SYNTHESIS_SYSTEM_PROMPT = (
 )
 
 
-# Injected into SYNTHESIS_PROMPT when the debaters reached numerical consensus
-# (every criterion within 1 point). The judge ratifies the agreement and must
-# stay inside the band the debaters converged to.
-SYNTHESIS_CONSENSUS_INSTRUCTION = """\
-The debaters reached consensus: their final scores are within 1 point on every criterion.
-Your role is to CONFIRM their agreement. For each criterion, your score MUST fall within the
-[min, max] range of the debaters' final scores shown above. Do not overturn the consensus —
-choose the value within that range that the trace evidence best supports."""
+# Injected into SYNTHESIS_PROMPT regardless of whether the debaters reached
+# numerical consensus. The debaters' scores are evidence for the judge, not a
+# constraint: the judge is free to score outside their [min, max] band when the
+# ground truth and action trace support it.
+SYNTHESIS_FREE_INSTRUCTION = """\
+You are the final authority on this evaluation. The debaters' scores shown above are
+INPUT to your decision, not a constraint on it. You may agree with them, or overturn
+either or both — including choosing a score outside the range they settled on — when
+the ground truth and the action trace support it.
 
+For each criterion, decide the score yourself from the evidence: what the agent actually
+did in the trace, and whether it matches the ground truth. Do not defer to the debaters
+because they agreed with each other, and do not split the difference when they disagreed.
+Where your score departs from both debaters, state the reason in that criterion's comment.
 
-# Injected into SYNTHESIS_PROMPT when the debate ended WITHOUT consensus
-# (max rounds reached, some criteria still diverge by >1). The judge arbitrates.
-SYNTHESIS_NO_CONSENSUS_INSTRUCTION = """\
-The debaters did NOT reach consensus: on some criteria their final scores still diverge by
-more than 1 point. Your role is to ARBITRATE. For each divergent criterion, decide the score
-yourself based on the evidence in the ground truth and the action trace — weigh the Critic's
-concerns against the Advocate's credits. Your score may sit anywhere within the debaters'
-range, but it must be justified by the facts in the trace, not by splitting the difference."""
+Work through these steps, and place each one in the field named below:
+1. Briefly summarise each debater's key reasoning.        -> reasoning_for_overall_score
+2. State explicitly, for each debater, whether you agree
+   or disagree with their assessment, and why.            -> reasoning_for_overall_score
+3. Give your own full evaluation of the agent's
+   performance, independent of theirs.                    -> overall_evaluation
+4. Assign the final per-criterion scores.                 -> scores
+
+Steps 1-2 are mandatory: engage with what the debaters argued before deciding. Engaging
+with them is not the same as following them — you are free to conclude that both were wrong."""
 
 
 SYNTHESIS_PROMPT = """\

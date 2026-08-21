@@ -32,10 +32,10 @@ def eval_judge(
         "--judge-type",
         help=(
             "Judge strategy: 'single' (LLMJudge), 'multi' "
-            "(Critic/Advocate debate with consensus + synthesis), "
-            "'multi_role' (ChatEval-style N-role sequential debate), or "
-            "'agent' (AgentAsJudge: tool-grounded trace verification then "
-            "GT-aware scoring)."
+            "(Critic/Advocate debate; unbounded final judge + shuffled "
+            "debater order), 'multi_role' (ChatEval-style N-role sequential "
+            "debate), or 'agent' (AgentAsJudge: tool-grounded trace "
+            "verification then GT-aware scoring)."
         ),
     ),
     session_id: str | None = typer.Option(None, "--session-id", help="Target session id (lab_hash)."),

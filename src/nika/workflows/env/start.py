@@ -1,12 +1,37 @@
 """Start a Kathara lab for one scenario and persist a new session."""
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from nika.net_env.net_env_pool import get_net_env_instance, scenario_requires_topo_tier
 from nika.utils.logger import bind_session_dir, log_event, refresh_logger
 from nika.utils.session import Session
+
+
+def _dump_topology(net_env, session_dir: str) -> None:
+    """Persist the topology's device inventory (names only) for the post-hoc judge."""
+    names = sorted(net_env.lab.machines.keys())
+
+    def _kind(n: str) -> str:
+        for k in ("super_spine", "spine", "leaf", "dns", "webserver", "client", "pc"):
+            if k in n:
+                return k
+        return "other"
+
+    by_kind: dict[str, list[str]] = {}
+    for n in names:
+        by_kind.setdefault(_kind(n), []).append(n)
+    payload = {
+        "lab": net_env.lab.name,
+        "device_count": len(names),
+        "devices": names,
+        "by_kind": by_kind,
+    }
+    with open(Path(session_dir) / "topology.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def _normalize_topo_tier(raw: str | None) -> Literal["s", "m", "l"] | None:
@@ -57,6 +82,7 @@ def start_net_env(
         scenario_params=scenario_params,
     )
     bind_session_dir(session.session_dir)
+    _dump_topology(net_env, session.session_dir)
     log_event(
         "env_start",
         f"Started network environment: {scenario} (size={tier}) — session {session_id}, lab {net_env.lab.name}",

@@ -131,11 +131,11 @@ def run_llm_judge(
         judge_llm_backend: LLM provider (openai, ollama, deepseek).
         judge_model: Model id for the chosen backend.
         judge_type: ``single`` for LLMJudge, ``multi`` for MultiAgentJudge
-            (Critic/Advocate debate with consensus + synthesis),
-            ``multi_role`` for MultiRoleDebateJudge (ChatEval-style N-role
-            sequential debate with numeric aggregation), or ``agent`` for
-            AgentAsJudge (tool-grounded verification of the session's own
-            trace, then GT-aware scoring).
+            (Critic/Advocate debate; the final judge is unbounded and the
+            debater order is shuffled), ``multi_role`` for MultiRoleDebateJudge
+            (ChatEval-style N-role sequential debate with numeric aggregation),
+            or ``agent`` for AgentAsJudge (tool-grounded verification of the
+            session's own trace, then GT-aware scoring).
         session_id: Target session id (auto-detected when only one closed).
     """
     session = Session()
