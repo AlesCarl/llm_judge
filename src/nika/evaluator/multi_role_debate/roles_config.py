@@ -116,30 +116,41 @@ class DebateConfig:
 
 
 ### Default roster (3 roles) — Critic, Network Engineer, General Operator
+#
+# The three roles differ by their FUNCTION in the debate, not by how severe they
+# are: the Critic argues against the agent, the General Operator argues for it,
+# and the Network Engineer checks the factual basis of both. Each prompt says
+# what evidence that role must look for and what it contributes to the
+# discussion; what a criterion means and what a 1/3/5 looks like is left
+# entirely to the shared CRITERIA_RUBRIC, so all four judge architectures are
+# measured with the same instrument.
 
 _CRITIC = RoleConfig(
     name="Critic",
     temperature=0.2,
     role_description=(
-        "You are the Critic, the panel's authority on process rigor and "
-        "EFFICIENCY. Score all five criteria exactly as the rubric defines "
-        "them, but bring special scrutiny to EFFICIENCY. Across every "
-        "criterion, actively look for failures, unsupported claims, and weak "
-        "reasoning — do not give the benefit of the doubt."
+        "You are the Critic. Your role in the panel is to identify "
+        "evidence-supported weaknesses in the agent's work. "
+        "Look for unsupported claims, overlooked evidence, and gaps "
+        "between the agent's conclusions and its recorded observations. "
+        "When another referee defends the agent, examine whether that "
+        "defense is supported by the trace. Cite concrete evidence for "
+        "each criticism, distinguish demonstrated errors from uncertainty, "
+        "and withdraw objections when the evidence resolves them. "
+        "Apply the shared rubric exactly as written when assigning scores."
     ),
-    
 )
 
 _NETWORK_ENGINEER = RoleConfig(
     name="Network Engineer",
     temperature=0.2,
     role_description=(
-        "You are the Network Engineer, the panel's authority on technical "
-        "soundness — RELEVANCE and CORRECTNESS — and co-authority with the "
-        "General Operator on the FINAL OUTCOME. Score all five criteria "
-        "exactly as the rubric defines them, applying deep networking "
-        "expertise (routing, interfaces, protocols, topology) with special "
-        "scrutiny to RELEVANCE and CORRECTNESS."
+        "You are the Network Engineer. Your role in the panel is to establish "
+        "what is technically supported by the trace, using your networking "
+        "expertise. Check the factual basis of both criticisms and defenses, "
+        "and state which claims the recorded evidence supports, contradicts, "
+        "or leaves unresolved. "
+        "Apply the shared rubric exactly as written when assigning scores."
     ),
 )
 
@@ -147,25 +158,25 @@ _GENERAL_OPERATOR = RoleConfig(
     name="General Operator",
     temperature=0.2,
     role_description=(
-        "You are the General Operator, the panel's authority on CLARITY and "
-        "(jointly with the Network Engineer) FINAL OUTCOME. Score all five "
-        "criteria exactly as the rubric defines them, but bring special "
-        "scrutiny to CLARITY — how explicitly and followably the agent stated "
-        "its reasoning."
+        "You are the General Operator. Your role in the panel is to identify "
+        "and defend evidence-supported strengths in the agent's work. "
+        "Highlight correct intermediate steps, partial progress, and "
+        "supported reasoning that other referees may have overlooked. "
+        "When responding to criticism, cite concrete evidence from the trace; "
+        "do not invent strengths or defend unsupported claims. "
+        "Apply the shared rubric exactly as written when assigning scores."
     ),
 )
 
 
-# Per-criterion competence weights used by the aggregator to compute a
-# WEIGHTED panel mean. Each row sums to 1.0. A role's vote counts most on the
-# criteria it is the panel authority for (see role_description above). 
-COMPETENCE_WEIGHTS: dict[str, dict[str, float]] = {
-    "relevance":     {"Critic": 0.2, "Network Engineer": 0.6, "General Operator": 0.2},
-    "correctness":   {"Critic": 0.2, "Network Engineer": 0.6, "General Operator": 0.2},
-    "efficiency":    {"Critic": 0.6, "Network Engineer": 0.2, "General Operator": 0.2},
-    "clarity":       {"Critic": 0.2, "Network Engineer": 0.2, "General Operator": 0.6},
-    "final_outcome": {"Critic": 0.2, "Network Engineer": 0.4, "General Operator": 0.4},
-}
+# Per-criterion vote weights used by the aggregator. The panel is differentiated
+# by dialectical FUNCTION (the Critic accuses, the Network Engineer establishes
+# what the trace supports, the General Operator credits), not by domain
+# competence: weighting one function above the others on a criterion would be a
+# systematic severity bias on that criterion, not an expertise argument. Votes
+# are therefore equal — the empty mapping makes aggregate_responses() fall back
+# to an unweighted panel mean.
+COMPETENCE_WEIGHTS: dict[str, dict[str, float]] = {}
 
 
 DEFAULT_DEBATE_CONFIG = DebateConfig(

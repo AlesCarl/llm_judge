@@ -4,11 +4,14 @@ Each debater produces an independent judgement (scores + reasoning),
 then we collapse the panel into a single JudgeResponse via simple per-criterion averaging.
 
 Aggregation rules:
-  - Per-criterion score: competence-WEIGHTED mean across debaters
-    (weights from COMPETENCE_WEIGHTS), rounded to the nearest integer
-    (Scores schema requires int 1-5). final_outcome is treated like the
-    other criteria — the aggregate may land on 2 or 4, which encodes
-    panel disagreement (e.g. "mostly failed with one dissenter").
+  - Per-criterion score: unweighted mean across debaters, rounded to the
+    nearest integer (Scores schema requires int 1-5). Every role's vote
+    counts the same: the panel is differentiated by dialectical function,
+    so weighting one function more heavily would be a severity bias rather
+    than an expertise argument (see COMPETENCE_WEIGHTS in roles_config).
+    final_outcome is treated like the other criteria — the aggregate may
+    land on 2 or 4, which encodes panel disagreement (e.g. "mostly failed
+    with one dissenter").
   - Per-criterion comment: concatenated debater comments, each prefixed
     with the role name, so the JudgeResponse keeps the diversity of
     perspectives in plain text.
@@ -85,11 +88,11 @@ def aggregate_responses(
             skipped,
         )
 
-    # 1. Per-criterion: COMPETENCE-WEIGHTED mean score + concatenated comments.
-    #    Each role's vote is weighted by its domain competence on the criterion
-    #    (COMPETENCE_WEIGHTS); weights are renormalised over the debaters that
-    #    actually produced a parseable response. All criteria, final_outcome
-    #    included, are rounded to the nearest integer in [1, 5].
+    # 1. Per-criterion: mean score + concatenated comments. Weights come from
+    #    COMPETENCE_WEIGHTS and are renormalised over the debaters that actually
+    #    produced a parseable response; with the default (empty) mapping every
+    #    role gets 1.0, i.e. a plain unweighted panel mean. All criteria,
+    #    final_outcome included, are rounded to the nearest integer in [1, 5].
     aggregated_scores: dict[str, Score] = {}
     for criterion in _CRITERIA:
         weights_row = COMPETENCE_WEIGHTS.get(criterion, {})
@@ -105,15 +108,19 @@ def aggregate_responses(
 
         rounded = max(1, min(5, round(avg)))
 
+        # Only label the weights when there actually are some, so the saved
+        # JSON never claims a weighted mean it did not compute.
         criterion_comments = [
-            f"[{name}] (w={weights_row.get(name, 1.0):.2f}) "
-            f"{getattr(resp.scores, criterion).comment}"
+            f"[{name}]"
+            + (f" (w={weights_row.get(name, 1.0):.2f})" if weights_row else "")
+            + f" {getattr(resp.scores, criterion).comment}"
             for name, resp in valid
         ]
         aggregated_scores[criterion] = Score(
             score=rounded,
             comment=(
-                f"Weighted panel mean = {avg:.2f} (aggregated to {rounded}).\n"
+                f"{'Weighted panel' if weights_row else 'Panel'} mean = "
+                f"{avg:.2f} (aggregated to {rounded}).\n"
                 + "\n".join(criterion_comments)
             ),
         )
@@ -137,11 +144,16 @@ def aggregate_responses(
         f"Multi-role debate aggregation across {len(valid)} debater(s):\n"
         f"{audit_trail}"
     )
+    aggregation_rule = (
+        "the competence-WEIGHTED mean (weights per criterion from "
+        "COMPETENCE_WEIGHTS)"
+        if COMPETENCE_WEIGHTS
+        else "the unweighted mean (every role's vote counts the same)"
+    )
     reasoning_for_overall_score = (
-        f"Per-criterion scores are the competence-WEIGHTED mean of the panel's "
-        f"final-round DebaterResponse values (weights per criterion from "
-        f"COMPETENCE_WEIGHTS), rounded to the nearest integer in [1, 5]. "
-        f"The unweighted panel-mean overall_score "
+        f"Per-criterion scores are {aggregation_rule} of the panel's "
+        f"final-round DebaterResponse values, rounded to the nearest integer "
+        f"in [1, 5]. The unweighted panel-mean overall_score "
         f"(average of each debater's overall_score) is "
         f"{panel_overall:.2f}; the JudgeResponse.overall_score is "
         f"recomputed from the aggregated per-criterion scores "
