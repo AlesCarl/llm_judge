@@ -16,6 +16,7 @@ and what user prompt is injected.
 from __future__ import annotations
 
 import logging
+from string import Template
 from typing import Type
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -77,15 +78,27 @@ class RoleDebater:
         """Append a HumanMessage (e.g. the per-turn task prompt)."""
         self._messages.append(HumanMessage(content=content))
 
-    def add_peer_message(self, peer_name: str, content: str) -> None:
+    def add_peer_message(
+        self, peer_name: str, content: str, template: str | None = None
+    ) -> None:
         """Inject another debater's statement as a visible HumanMessage.
 
         ChatEval's "visibility: all" semantics: every debater sees the
-        full chain of statements from the panel. 
+        full chain of statements from the panel.
+
+        The statement travels on the same channel as the task prompt, so
+        `template` (DebateConfig.peer_message_template) frames it as a peer's
+        opinion to be checked against the trace rather than as an instruction.
+        Without a template the statement is injected bare, prefixed with the
+        peer's name — the original behaviour.
         """
-        self._messages.append(
-            HumanMessage(content=f"[{peer_name}]\n{content}")
-        )
+        if template is None:
+            body = f"[{peer_name}]\n{content}"
+        else:
+            body = Template(template).safe_substitute(
+                peer_name=peer_name, content=content
+            )
+        self._messages.append(HumanMessage(content=body))
 
     def add_assistant_message(self, content: str) -> None:
         """Append an AIMessage (the debater's own reply)."""

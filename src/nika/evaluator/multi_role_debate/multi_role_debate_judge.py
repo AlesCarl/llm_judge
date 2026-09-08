@@ -39,14 +39,8 @@ logger = logging.getLogger(__name__)
 
 # in round1:  _initial_user_prompt()
 
-_CONTINUATION_PROMPT = """\
-The other referees have spoken (their statements are visible above).
-Consider their points: refine, defend, or update your position based on
-the evidence in the trace. Keep it short and focused, ${agent_name}.
-
-${discussion_prompt}
-${final_prompt}
-"""
+# Rounds 2..N use _continuation_prompt(), whose two templates (discussion and
+# final-scoring) live in roles_config alongside the other prompt fragments.
 
 
 class MultiRoleDebateJudge(BaseJudge):
@@ -125,24 +119,36 @@ class MultiRoleDebateJudge(BaseJudge):
         )
 
 
-    def _continuation_prompt(self, role: RoleConfig, is_final: bool) -> str:
-        """Build the per-turn message for rounds 2..N (short).
+    def _continuation_prompt(
+        self,
+        role: RoleConfig,
+        is_final: bool,
+        ground_truth: str,
+        trace: str,
+    ) -> str:
+        """Build the per-turn message for rounds 2..N.
 
-        Discussion rounds get the score-free discussion instruction; the final
-        round gets the structured-scoring instruction instead. The two are
-        mutually exclusive so numbers are committed for the first time only in
-        the final round.
+        Discussion rounds get the short template plus the score-free discussion
+        instruction. The final round gets a different template that re-injects
+        ground truth, trace and rubric before the structured-scoring
+        instruction: by then the evidence is several messages back while the
+        peers' arguments sit right next to the scoring request, so the scores
+        risk summarising the debate instead of the trace.
+
+        The two instructions stay mutually exclusive, so numbers are committed
+        for the first time only in the final round.
         """
-        final_prompt = ""
-        discussion_prompt = ""
         if is_final:
-            final_prompt = role.final_prompt or self.config.final_prompt
-        else:
-            discussion_prompt = self.config.discussion_prompt
-        return Template(_CONTINUATION_PROMPT).safe_substitute(
+            return Template(self.config.final_continuation_prompt).safe_substitute(
+                ground_truth=ground_truth,
+                trace=trace,
+                agent_name=role.name,
+                final_prompt=role.final_prompt or self.config.final_prompt,
+            )
+        return Template(self.config.continuation_prompt).safe_substitute(
             agent_name=role.name,
-            discussion_prompt=discussion_prompt,
-            final_prompt=final_prompt,
+            discussion_prompt=self.config.discussion_prompt,
+            final_prompt="",
         )
     
 
@@ -201,6 +207,7 @@ class MultiRoleDebateJudge(BaseJudge):
                     self_idx=i,
                     round_idx=round_idx,
                     inject_current_round=not is_final,
+                    peer_template=self.config.peer_message_template,
                 )
 
                 # 2. Add the task prompt (round 1) or continuation prompt (round 2+)
@@ -209,7 +216,12 @@ class MultiRoleDebateJudge(BaseJudge):
                         role, ground_truth, trace, is_final=is_final
                     )
                 else:
-                    user_msg = self._continuation_prompt(role, is_final=is_final)
+                    user_msg = self._continuation_prompt(
+                        role,
+                        is_final=is_final,
+                        ground_truth=ground_truth,
+                        trace=trace,
+                    )
                 debater.add_user_message(user_msg)
 
 
@@ -255,6 +267,7 @@ class MultiRoleDebateJudge(BaseJudge):
         self_idx: int,
         round_idx: int,
         inject_current_round: bool = True,
+        peer_template: str | None = None,
     ) -> None:
         """Append every peer statement that's new to `debater`.
 
@@ -263,15 +276,21 @@ class MultiRoleDebateJudge(BaseJudge):
           spoke AFTER this debater's last turn in round r-1), then
           peers with index < self_idx from the current round.
 
+        `peer_template` frames each statement as a peer's opinion rather than
+        an instruction; it applies to every injection, in every round.
         """
         if round_idx > 0:
             prev_round = statements[round_idx - 1]
             for j in range(self_idx + 1, len(roles)):
-                debater.add_peer_message(roles[j].name, prev_round[j])
+                debater.add_peer_message(
+                    roles[j].name, prev_round[j], template=peer_template
+                )
 
         if inject_current_round:
             for j in range(self_idx):
-                debater.add_peer_message(roles[j].name, round_statements[j])
+                debater.add_peer_message(
+                    roles[j].name, round_statements[j], template=peer_template
+                )
 
 
     ### transcript
