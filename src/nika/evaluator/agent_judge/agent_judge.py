@@ -7,7 +7,7 @@ report and trusting it (the "beauty bias" the text judges are exposed to).
 
 Two phases:
 
-  Phase A (GT-free) — a ReAct agent (see ``verify_tools.build_verify_tools``)
+  Phase A (GT-free) — a ReAct agent 
   audits the agent's submitted claims against that SAME session's recorded
   trace, within a hard tool-call budget, and produces a per-claim
   CONFIRMED / REFUTED / COULD-NOT-CHECK verification report. It never sees
@@ -29,6 +29,7 @@ to post-hoc evaluation, not an oversight.
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -51,7 +52,56 @@ logger = logging.getLogger(__name__)
 
 # Tool-call budget for the Phase-A verifier (recursion_limit); keeps the
 # judge's cost bounded and comparable to the other three judges.
-_VERIFY_BUDGET = 12
+_VERIFY_BUDGET = 15
+
+
+# Match a "CLAIM: <claim> — <VERDICT> — <evidence>" line. The verdict token
+# anchors the split so an em-dash inside the claim/evidence doesn't break it;
+# leading and surrounding markdown bold (``**``) is tolerated because the judge
+# model sometimes emits the line in bold, and the evidence tail is optional.
+_CLAIM_RE = re.compile(
+    r"CLAIM:\s*\**\s*(?P<claim>.*?)\s*[—-]+\s*\**\s*"
+    r"(?P<verdict>COULD-NOT-CHECK|CONFIRMED|REFUTED)\b"
+    r"\**\s*(?:[—-]+\s*(?P<evidence>.*))?",
+    re.IGNORECASE,
+)
+
+
+def _claim_key(claim: str) -> str:
+    """Normalise a claim to dedup restatements (bold header vs final line,
+    ``=`` vs ``:`` separators) so the same claim is counted once."""
+    return re.sub(r"[\s'\"\[\]=:]+", "", claim).lower()
+
+
+def _parse_claim_verdicts(report: str) -> list[dict]:
+    """Extract the verifier's per-claim CLAIM lines into structured records.
+
+    Phase A ends with one ``CLAIM: <claim> — <VERDICT> — <evidence>`` line per
+    claim. Parsing them into ``{claim, verdict, evidence}`` gives a
+    machine-readable audit field (so downstream analysis can count
+    CONFIRMED/REFUTED/COULD-NOT-CHECK per session without regex-scraping the
+    free-text report). The model may restate a claim (an inline bold summary
+    plus a final line); dedup by normalised claim, last occurrence winning so
+    the authoritative final line prevails. Best-effort: unparseable reports
+    (e.g. budget exhausted) simply yield an empty list.
+    """
+    seen: dict[str, dict] = {}
+    order: list[str] = []
+    for line in report.splitlines():
+        if "CLAIM:" not in line.upper():
+            continue
+        m = _CLAIM_RE.search(line)
+        if not m:
+            continue
+        key = _claim_key(m.group("claim"))
+        if key not in seen:
+            order.append(key)
+        seen[key] = {
+            "claim": m.group("claim").strip().strip("*").strip(),
+            "verdict": m.group("verdict").upper(),
+            "evidence": (m.group("evidence") or "").strip().strip("*").strip(),
+        }
+    return [seen[k] for k in order]
 
 
 def _serialize_messages(messages) -> list[dict]:
@@ -196,6 +246,7 @@ class AgentAsJudge(BaseJudge):
             json.dump(
                 {
                     "verification_report": verification_report,
+                    "claim_verdicts": _parse_claim_verdicts(verification_report),
                     "taxonomy_check": taxonomy,
                     "tool_call_trace": audit_trace,
                 },

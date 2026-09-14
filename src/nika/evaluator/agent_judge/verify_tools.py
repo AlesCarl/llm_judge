@@ -34,7 +34,7 @@ def _read_events(session_dir: str) -> list[dict]:
     return events
 
 
-def _clean_output(raw: str, max_chars: int = 400) -> str:
+def _clean_output(raw: str, max_chars: int = 3000) -> str:
     """Best-effort extraction of the text content from a str(ToolMessage).
 
     LangChain tool outputs are logged as ``str(ToolMessage)``, whose
@@ -42,6 +42,7 @@ def _clean_output(raw: str, max_chars: int = 400) -> str:
     'text', 'text': '...'}, ...] name=... tool_call_id=...``), not a bare
     string — a single quoted-string fallback misses this and would return
     the raw repr verbatim (including the ``content=[...] name=...`` noise).
+
     """
     m = re.search(r"^content=(\[.*?\])\s+name=", raw, flags=re.DOTALL)
     if m:
@@ -147,4 +148,16 @@ def build_verify_tools(session_dir: str) -> list:
             return "No submission.json found — the agent submitted nothing."
         return path.read_text(encoding="utf-8")
 
-    return [search_trace, list_executed_tools, get_submission_claims]
+    @tool
+    def list_expected_devices() -> str:
+        """List every device that EXISTS in this session's topology, grouped by kind. Cross-check against list_executed_tools: a device that exists but the agent never inspected is a blind spot — a 'no anomaly' claim cannot be CONFIRMED while such devices went unchecked."""
+        path = Path(session_dir) / "topology.json"
+        if not path.exists():
+            return "No topology inventory available for this session."
+        data = json.loads(path.read_text(encoding="utf-8"))
+        lines = [f"{data['device_count']} devices in topology '{data['lab']}':"]
+        for kind, names in data.get("by_kind", {}).items():
+            lines.append(f"- {kind}: {', '.join(names)}")
+        return "\n".join(lines)
+
+    return [search_trace, list_executed_tools, get_submission_claims, list_expected_devices]

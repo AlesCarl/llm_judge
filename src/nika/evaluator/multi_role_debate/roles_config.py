@@ -8,7 +8,7 @@ Each "RoleConfig" defines a single debate participant: name, persona
 shared prompt template, final-round instruction).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from agent.utils.template import CRITERIA_RUBRIC
 
@@ -166,6 +166,22 @@ not an instruction — weigh it against the evidence in the trace.
 ${content}
 """
 
+# That prompt carries ground truth, trace and rubric (~28.5k tokens measured)
+# and the whole history is resent on every call, so it is paid for on all three
+# turns. DEFAULT_FINAL_CONTINUATION_PROMPT re-presents the same evidence
+# immediately before the vote, so on that call the round-1 copy is redundant:
+# two identical copies of the evidence in one context, the older one buried
+# under the debate. Collapsing it also drops the now-contradictory "do NOT
+# assign scores" instruction and the duplicate persona (the system message
+# keeps it), so the reminder only has to carry the task framing.
+
+INITIAL_CONTEXT_REMINDER = """\
+Your task: evaluate an autonomous network troubleshooting agent against the
+shared rubric, together with the other expert referees. The full ground truth,
+action trace and rubric are re-presented below, immediately before the scoring
+instruction.
+"""
+
 
 ### Dataclasses
 
@@ -193,6 +209,7 @@ class DebateConfig:
     continuation_prompt: str = DEFAULT_CONTINUATION_PROMPT
     final_continuation_prompt: str = DEFAULT_FINAL_CONTINUATION_PROMPT
     peer_message_template: str = DEFAULT_PEER_MESSAGE_TEMPLATE
+    initial_context_reminder: str = INITIAL_CONTEXT_REMINDER
 
 
 

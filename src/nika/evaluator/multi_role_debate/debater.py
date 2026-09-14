@@ -47,6 +47,9 @@ class RoleDebater:
         self._structured_llm: BaseChatModel | None = None
         # Optional invoke config (e.g. token-usage callback); set by the judge.
         self.invoke_config: dict | None = None
+        # Position of the round-1 task prompt in _messages. Set by
+        # add_user_message(is_initial=True), used by collapse_initial().
+        self._initial_idx: int | None = None
 
 
 
@@ -56,6 +59,9 @@ class RoleDebater:
     def set_system_prompt(self, prompt: str) -> None:
         """Initialize the message list with the role/system prompt."""
         self._messages = [SystemMessage(content=prompt)]
+        # The history is rebuilt from scratch, so any recorded position into
+        # the old one is stale.
+        self._initial_idx = None
 
     def use_structured_output(self, schema: Type[BaseModel]) -> None:
         """Enable structured-output mode for the *next* speak() calls.
@@ -65,17 +71,20 @@ class RoleDebater:
         """
         self._structured_llm = self.llm.with_structured_output(schema)
 
-    def disable_structured_output(self) -> None:
-        """Revert to free-form text generation."""
-        self._structured_llm = None
-
 
 
 
     ### message ops
 
-    def add_user_message(self, content: str) -> None:
-        """Append a HumanMessage (e.g. the per-turn task prompt)."""
+    def add_user_message(self, content: str, is_initial: bool = False) -> None:
+        """Append a HumanMessage (e.g. the per-turn task prompt).
+
+        `is_initial` marks the round-1 task prompt so collapse_initial() can
+        find it later. Its position is not fixed: peer statements are injected
+        before it, so it lands at a different index for each debater.
+        """
+        if is_initial:
+            self._initial_idx = len(self._messages)
         self._messages.append(HumanMessage(content=content))
 
     def add_peer_message(
@@ -103,6 +112,24 @@ class RoleDebater:
     def add_assistant_message(self, content: str) -> None:
         """Append an AIMessage (the debater's own reply)."""
         self._messages.append(AIMessage(content=content))
+
+    def collapse_initial(self, text: str) -> None:
+        """Replace the round-1 task prompt with a short stub, in place.
+
+        The round-1 prompt carries ground truth, trace and rubric, and the
+        whole history is resent on every call, so that block is paid for on
+        every turn. When the final-round prompt re-presents the same evidence
+        there is no reason to keep the older copy. No-op when no initial
+        prompt is registered (num_rounds == 1, where it is the only copy).
+
+        Destructive: the original text is not kept, so after this call the
+        message list no longer reflects the history as it was first built.
+        The saved debate transcript is unaffected — the judge builds it from
+        the statements, not from this list.
+        """
+        if self._initial_idx is None:
+            return
+        self._messages[self._initial_idx] = HumanMessage(content=text)
 
 
 
@@ -134,12 +161,3 @@ class RoleDebater:
         self.add_assistant_message(answer)
         logger.debug("[%s]\n%s", self.name, answer)
         return answer
-
-
-
-    ### introspection
-
-    @property
-    def transcript(self) -> list:
-        """Return a shallow copy of this debater's full message list."""
-        return list(self._messages)

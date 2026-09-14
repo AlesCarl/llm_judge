@@ -222,7 +222,17 @@ class MultiRoleDebateJudge(BaseJudge):
                         ground_truth=ground_truth,
                         trace=trace,
                     )
-                debater.add_user_message(user_msg)
+
+                # The final-round prompt re-presents ground truth, trace and
+                # rubric, so the round-1 copy still sitting in the history is
+                # redundant on this call — and the history is resent on every
+                # call, which is where most of the token cost comes from.
+                # Guarded on round_idx > 0: with num_rounds == 1 round 1 is
+                # also the scoring round and its prompt is the only evidence.
+                if is_final and round_idx > 0:
+                    debater.collapse_initial(self.config.initial_context_reminder)
+
+                debater.add_user_message(user_msg, is_initial=(round_idx == 0))
 
 
                 # 3** . Switch to structured output for the final round.
