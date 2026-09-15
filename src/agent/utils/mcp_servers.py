@@ -1,98 +1,226 @@
+"""Build HTTP MCP client configs for NIKA troubleshooting agents."""
+
+from __future__ import annotations
+
+import functools
 import os
+from datetime import timedelta
 
-from nika.config import MCP_SERVER_DIR
+from langchain_core.tools import ToolException
 
-# Keyword sets that trigger inclusion of each optional Kathara MCP server.
-_FRR_KEYWORDS = frozenset({"bgp", "ospf", "rip", "frr", "routing"})
-_BMV2_KEYWORDS = frozenset({"p4", "bmv2", "sdn", "bloom", "mpls", "int", "counter"})
-_TELEMETRY_KEYWORDS = frozenset({"telemetry"})
+from agent.sandbox.config import ENV_GATEWAY_AGENT_URL, ENV_GATEWAY_URL
+
+__all__ = [
+    "MCPServerConfig",
+    "SESSION_HEADER",
+    "harden_mcp_tools",
+    "select_diagnosis_servers",
+    "select_session_servers",
+    "session_http_headers",
+]
+
+SESSION_HEADER = "NIKA-Session-Id"
 
 
-def select_diagnosis_servers(scenario_name: str, problem_names: list[str]) -> list[str]:
-    """Return the minimal set of Kathara MCP server names needed for *scenario*.
+def select_diagnosis_servers(
+    scenario_name: str,
+    *,
+    backend: str | None = None,
+) -> list[str]:
+    """Lazy re-export so SDK sandboxes can import this module without ``nika``."""
+    from nika.mcp.registry import (
+        select_diagnosis_servers as _select,
+    )
 
-    ``kathara_base_mcp_server`` is always included.  The three specialised
-    servers are added when keyword signals appear in the scenario or problem
-    names (tokens are split on ``_`` and ``-``).
+    return _select(scenario_name, backend=backend)
 
-    Parameters
-    ----------
-    scenario_name:
-        E.g. ``"dc_clos_bgp"`` or ``"p4_counter"``.
-    problem_names:
-        E.g. ``["bgp_session_down"]``.
-    """
-    combined = (scenario_name + " " + " ".join(problem_names)).lower()
-    tokens = set(combined.replace("_", " ").replace("-", " ").split())
 
-    servers = ["kathara_base_mcp_server"]
-    if tokens & _FRR_KEYWORDS:
-        servers.append("kathara_frr_mcp_server")
-    if tokens & _BMV2_KEYWORDS:
-        servers.append("kathara_bmv2_mcp_server")
-    if tokens & _TELEMETRY_KEYWORDS:
-        servers.append("kathara_telemetry_mcp_server")
+def session_http_headers(session_id: str) -> dict[str, str]:
+    return {SESSION_HEADER: session_id}
+
+
+def _gateway_base_url() -> str:
+    if os.environ.get("NIKA_SANDBOX_EXECUTION") == "1":
+        agent_base = os.environ.get(ENV_GATEWAY_AGENT_URL, "").strip().rstrip("/")
+        if agent_base:
+            return agent_base
+    base = os.environ.get(ENV_GATEWAY_URL, "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError(
+            f"{ENV_GATEWAY_URL} is not set. Start the MCP gateway before building HTTP config."
+        )
+    return base
+
+
+def select_session_servers(
+    scenario_name: str,
+    *,
+    backend: str | None = None,
+) -> list[str]:
+    """Return all MCP server names for a troubleshooting session."""
+    from nika.mcp.registry import SUBMISSION_SERVER
+
+    servers = select_diagnosis_servers(
+        scenario_name,
+        backend=backend,
+    )
+    if SUBMISSION_SERVER not in servers:
+        servers.append(SUBMISSION_SERVER)
     return servers
+
+
+# A read timeout prevents a lost MCP response from blocking the full benchmark case.
+# A value of 0 disables the timeout.
+DEFAULT_MCP_READ_TIMEOUT_SECONDS = 120.0
+
+
+def mcp_read_timeout_seconds() -> float | None:
+    """Return the MCP read timeout in seconds, or ``None`` when disabled.
+
+    LangGraph, AutoGen, and mcp-agent share this value. Older
+    ``langchain-mcp-adapters`` releases may not support ``session_kwargs``.
+    """
+    try:
+        from nika.run_config.loader import get_run_config
+
+        seconds = float(get_run_config().nika.mcp.read_timeout_sec)
+    except Exception:  # noqa: BLE001 - sandbox / early import
+        seconds = DEFAULT_MCP_READ_TIMEOUT_SECONDS
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+@functools.lru_cache(maxsize=1)
+def _mcp_read_timeout() -> timedelta | None:
+    seconds = mcp_read_timeout_seconds()
+    if seconds is None:
+        return None
+    if not _adapter_supports_session_kwargs():
+        print(
+            "WARNING: installed langchain_mcp_adapters does not support "
+            "session_kwargs — MCP calls have NO read timeout (hang risk); "
+            "upgrade with `pip install -U langchain-mcp-adapters`."
+        )
+        return None
+    return timedelta(seconds=seconds)
+
+
+def _adapter_supports_session_kwargs() -> bool:
+    """Return whether the installed adapter accepts ``session_kwargs``."""
+    for module_name in (
+        "langchain_mcp_adapters.sessions",
+        "langchain_mcp_adapters.client",
+    ):
+        try:
+            module = __import__(
+                module_name, fromlist=["StreamableHttpConnection", "StdioConnection"]
+            )
+        except ImportError:
+            continue
+        for class_name in ("StreamableHttpConnection", "StdioConnection"):
+            connection = getattr(module, class_name, None)
+            if connection is not None:
+                return "session_kwargs" in getattr(connection, "__annotations__", {})
+    return False
+
+
+def _flatten_exception(exc: BaseException) -> str:
+    """Readable one-line summary of *exc*, unwrapping ExceptionGroups."""
+    if isinstance(exc, BaseExceptionGroup):
+        parts = [_flatten_exception(sub) for sub in exc.exceptions]
+        return "; ".join(dict.fromkeys(parts))
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _hardened_coroutine(tool_name: str, coro_fn):
+    @functools.wraps(coro_fn)
+    async def wrapped(*args, **kwargs):
+        try:
+            return await coro_fn(*args, **kwargs)
+        except ToolException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - includes ExceptionGroup
+            raise ToolException(
+                f"MCP tool '{tool_name}' failed with a transport error "
+                f"({_flatten_exception(exc)}). Any result was lost; retry the "
+                "call if you still need it."
+            ) from exc
+
+    return wrapped
+
+
+def harden_mcp_tools(tools) -> None:
+    """Convert transport-level failures of MCP tools into ToolExceptions.
+
+    langchain opens a fresh MCP session per tool call, and the client's
+    stream reader can hit a teardown race (e.g. BrokenResourceError inside an
+    ExceptionGroup) when the server flushes output while the session closes.
+    ``handle_tool_error = True`` only catches ToolException, so without this
+    wrapper one such race escapes the tool node and kills the whole benchmark
+    case. With it, the agent sees an error ToolMessage and can just retry.
+    """
+    for tool in tools:
+        if getattr(tool, "coroutine", None) is not None:
+            tool.coroutine = _hardened_coroutine(tool.name, tool.coroutine)
 
 
 class MCPServerConfig:
     def __init__(self, session_id: str):
         if not session_id:
             raise ValueError("session_id is required to start MCP servers.")
-        self.mcp_server_dir = str(MCP_SERVER_DIR)
         self.session_id = session_id
 
-    def _server_env(self) -> dict[str, str]:
+    def _build_http_entry(self, name: str) -> dict:
+        from nika.mcp.registry import MCP_SERVER_SPECS
+
+        if name not in MCP_SERVER_SPECS:
+            raise KeyError(f"Unknown MCP server: {name!r}")
+        base = _gateway_base_url()
+        entry = {
+            "transport": "http",
+            "url": f"{base}/mcp/{name}/mcp",
+            "headers": session_http_headers(self.session_id),
+        }
+        read_timeout = _mcp_read_timeout()
+        if read_timeout is not None:
+            # Forwarded to mcp.ClientSession(read_timeout_seconds=...):
+            # a lost/blocked response raises McpError instead of hanging.
+            entry["session_kwargs"] = {"read_timeout_seconds": read_timeout}
+        return entry
+
+    def load_http_config(self, server_names: list[str]) -> dict:
+        """Return HTTP MCP client config for *server_names*."""
+        from nika.mcp.registry import MCP_SERVER_SPECS
+
         return {
-            # inherit USER/HOME/PATH so the MCP subprocess keeps the 'ubuntu'
-            # identity (otherwise the agent goes blind / sees 0 hosts).
-            **os.environ,
-            "NIKA_SESSION_ID": self.session_id,
+            name: self._build_http_entry(name)
+            for name in server_names
+            if name in MCP_SERVER_SPECS
         }
 
-    def load_config(self, if_submit: bool = False) -> dict:
-        if if_submit:
-            config = {
-                "task_mcp_server": {
-                    "command": "python3",
-                    "args": [f"{self.mcp_server_dir}/task_mcp_server.py"],
-                    "transport": "stdio",
-                },
-            }
-        else:
-            config = {
-                "kathara_base_mcp_server": {
-                    "command": "python3",
-                    "args": [f"{self.mcp_server_dir}/kathara_base_mcp_server.py"],
-                    "transport": "stdio",
-                },
-                "kathara_frr_mcp_server": {
-                    "command": "python3",
-                    "args": [f"{self.mcp_server_dir}/kathara_frr_mcp_server.py"],
-                    "transport": "stdio",
-                },
-                "kathara_bmv2_mcp_server": {
-                    "command": "python3",
-                    "args": [f"{self.mcp_server_dir}/kathara_bmv2_mcp_server.py"],
-                    "transport": "stdio",
-                },
-                "kathara_telemetry_mcp_server": {
-                    "command": "python3",
-                    "args": [f"{self.mcp_server_dir}/kathara_telemetry_mcp_server.py"],
-                    "transport": "stdio",
-                },
-            }
+    def load_session_http_config(
+        self,
+        scenario_name: str,
+        *,
+        backend: str | None = None,
+    ) -> dict:
+        """Return HTTP MCP config for all servers needed by the session."""
+        server_names = select_session_servers(
+            scenario_name,
+            backend=backend,
+        )
+        return self.load_http_config(server_names)
 
-        for server in config.values():
-            server["env"] = self._server_env()
-        return config
+    # Backward-compatible aliases used in tests and docs during migration.
+    def load_config(self, if_submit: bool = False) -> dict:
+        from nika.mcp.registry import MCP_SERVER_SPECS, SUBMISSION_SERVER
+
+        if if_submit:
+            return self.load_http_config([SUBMISSION_SERVER])
+        names = [n for n, spec in MCP_SERVER_SPECS.items() if spec.role != "task"]
+        return self.load_http_config(names)
 
     def load_filtered_config(self, server_names: list[str]) -> dict:
-        """Diagnosis config restricted to *server_names*.
-
-        Useful when only a subset of Kathara MCP servers is relevant for a
-        given scenario (e.g. skip bmv2 tools for a pure routing problem).
-        Unknown names in *server_names* are silently ignored.
-        """
-        full = self.load_config(if_submit=False)
-        return {k: v for k, v in full.items() if k in server_names}
+        return self.load_http_config(server_names)

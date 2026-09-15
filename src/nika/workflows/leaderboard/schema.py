@@ -1,0 +1,226 @@
+"""Leaderboard submission schemas."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+METADATA_FILENAME = "metadata.yaml"
+README_FILENAME = "README.md"
+RESULTS_DIRNAME = "results"
+IDENTITY_FILENAME = "identity.yaml"
+METRICS_FILENAME = "metrics.json"
+RCA_CONFUSION_FILENAME = "rca_confusion.json"
+TRIALS_DIRNAME = "trials"
+TRIAL_RESULT_FILENAME = "result.json"
+
+# Local sibling package suffix; remote HF path drops this suffix.
+TRAJECTORIES_DIR_SUFFIX = "_trajectories"
+
+# Per-trial files copied into the Hugging Face trajectories package.
+TRAJECTORY_REQUIRED_FILES = (
+    "run.json",
+    "messages.jsonl",
+    "nika.jsonl",
+    "ground_truth.json",
+    "eval_metrics.json",
+)
+TRAJECTORY_OPTIONAL_SUCCESS_FILE = "submission.json"
+
+# Rejected under trajectory packages (pcaps / validation dumps / judge extras).
+TRAJECTORY_FORBIDDEN_NAME_FRAGMENTS = (
+    "packet_captures",
+    ".pcap",
+    ".pcapng",
+    "llm_judge.json",
+    "sandbox_manifest.json",
+    "validation-contract.json",
+    "validation-results.json",
+    "validation-failure-effect.json",
+    "batfish-validation",
+)
+
+PRIMARY_METRIC = "rca_f1"
+
+SCORE_METRIC_KEYS = (
+    "detection_score",
+    "localization_accuracy",
+    "localization_precision",
+    "localization_recall",
+    "localization_f1",
+    "rca_accuracy",
+    "rca_precision",
+    "rca_recall",
+    "rca_f1",
+    "fault_type_precision",
+    "fault_type_recall",
+    "fault_type_f1",
+)
+
+TRACE_METRIC_KEYS = (
+    "in_tokens",
+    "out_tokens",
+    "steps",
+    "tool_calls",
+    "tool_errors",
+)
+
+
+class SubmissionInfo(BaseModel):
+    """User-facing submission identity (leaderboard display)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1)
+    authors: str = Field(..., min_length=1)
+    org: str | None = None
+    site: str | None = None
+    report: str | None = None
+    logo: str | None = None
+    email: str | None = None
+    github: str | None = None
+
+
+class SubmissionAgent(BaseModel):
+    """Required agent/system metadata for leaderboard submissions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(..., min_length=1)
+    framework: str = Field(..., min_length=1)
+    tools: list[str]
+    skills: list[str]
+    optimization_methods: list[str]
+    tags: list[str]
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("tools", "skills", "optimization_methods", "tags")
+    @classmethod
+    def _non_empty_strings(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("list entries must be non-empty strings")
+        return value
+
+
+class SubmissionMetadata(BaseModel):
+    """Fixed ``metadata.yaml`` package root (user-filled)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    info: SubmissionInfo
+    agent: SubmissionAgent
+
+
+class BenchmarkIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    version: str
+    ref: str
+    split: Literal["dev", "test"]
+    case_count: int = Field(..., ge=1)
+    n_trials: int = Field(..., ge=1)
+    scoring_id: str
+    leaderboard_primary: str = PRIMARY_METRIC
+
+
+class RunIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    official: bool
+    agent_type: str
+    model: str | None = None
+    llm_provider: str | None = None
+    max_steps: int | None = None
+    case_timeout_sec: int
+    nika_git_commit: str | None = None
+    source_result_dir: str | None = None
+
+
+class PackageIdentity(BaseModel):
+    """Machine-written ``results/identity.yaml`` (benchmark + run binding).
+
+    Scores packages may set ``trajectories_relpath``. Trajectory packages may
+    set ``scores_package`` (dirname of the paired scores package).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    created_at: str
+    benchmark: BenchmarkIdentity
+    run: RunIdentity
+    trajectories_relpath: str | None = None
+    scores_package: str | None = None
+
+
+class TrialResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: str
+    case_key: str
+    trial_index: int = Field(..., ge=1)
+    scenario: str
+    problem: str
+    outcome: Literal["success", "agent_failed"]
+    metrics: dict[str, float | int | None] = Field(default_factory=dict)
+    gt_fault_types: list[str] = Field(default_factory=list)
+    predicted_fault_types: list[str] | None = None
+
+    @field_validator("gt_fault_types")
+    @classmethod
+    def _non_empty_gt_types(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("gt_fault_types entries must be non-empty strings")
+        return value
+
+    @field_validator("predicted_fault_types")
+    @classmethod
+    def _non_empty_pred_types(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "predicted_fault_types entries must be non-empty strings"
+                )
+        return value
+
+
+class RcaConfusionPair(BaseModel):
+    """One multi-label GT→predicted edge count for RCA confusion display."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gt: str
+    predicted: str
+    count: int = Field(..., ge=1)
+
+
+class RcaConfusion(BaseModel):
+    """Package-level RCA misclassification summary (multi-label edges)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    labeling: Literal["multi_label_edges"] = "multi_label_edges"
+    pairs: list[RcaConfusionPair] = Field(default_factory=list)
+    n_missing_prediction: int = Field(..., ge=0)
+    missing_prediction_trial_ids: list[str] = Field(default_factory=list)
+
+
+class AggregatedMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_metric: str = PRIMARY_METRIC
+    mean_rca_f1: float
+    mean_localization_f1: float
+    mean_detection_score: float
+    n_trials_expected: int
+    n_trials_present: int
+    n_success: int
+    n_agent_failed: int
+    token_totals: dict[str, int] = Field(default_factory=dict)
+    steps_totals: dict[str, int] = Field(default_factory=dict)

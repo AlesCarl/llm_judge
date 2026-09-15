@@ -12,20 +12,24 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic",
+    "pydantic>=2.11,<2.14",
     "openai",
     "instructor",
-    "kathara",
-    "langfuse",
     "python-dotenv",
     "langchain-deepseek",
     "langgraph",
-    "mcp[cli]",
+    "mcp[cli]==1.28.0",
     "langchain-mcp-adapters",
-    "langchain-ollama",
     "langchain",
     "typer>=0.25.1",
     "func_timeout",
+    "pyyaml",
+    "mcp-agent[openai]>=0.2.6",
+    "autogen-agentchat>=0.7.5",
+    "autogen-ext[mcp,openai]>=0.7.5",
+    "ruff>=0.15.20",
+    "langchain-anthropic>=1.5.6",
+    "huggingface_hub>=0.30.0",
     "pandas>=2.3.3",
     "polars>=1.35.2",
     "networkx>=3.6",
@@ -33,17 +37,55 @@ dependencies = [
     "seaborn>=0.13.2",
 ]
 
+[project.optional-dependencies]
+# Local Kathara labs (also covers Kubernetes scenarios under net_env/kathara/kubernetes).
+kathara = ["kathara", "kubernetes>=31.0.0", "docker"]
+# Containerlab labs (requires the external `clab` binary; SRL scenarios also need `gnmic`).
+containerlab = ["docker"]
+# Both lab backends.
+labs = ["kathara", "kubernetes>=31.0.0", "docker"]
+# SADE community agent (src/agent/community/sade) drives Claude Code via the SDK.
+sade = ["claude-agent-sdk"]
+# SDK agents (src/agent/sdk/claude_sdk, src/agent/sdk/codex_sdk).
+sdk = ["claude-agent-sdk", "openai-codex>=0.1.0b3"]
+# Optional Langfuse tracing for byo.langgraph.
+observability = ["langfuse"]
+batfish = [
+    "docker>=7.1.0",
+    "pybatfish==2025.7.7.2423",
+]
+
 [project.scripts]
-nika = "nika.codex_cli.main:main"
+nika = "nika.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["nika*", "agent*"]
+include = ["nika*", "agent*", "traffic*"]
+
+[tool.setuptools.package-data]
+"nika.net_env.isp.sndlib" = ["README.md", "*/network.xml"]
+"nika.problems.forwarding_encapsulation_policy" = ["*.bpf.c"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "matplotlib"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
+python_classes = ["Test*", "*Test", "*Tests", "*TestCase"]
+asyncio_mode = "auto"
+markers = [
+    "unit: fast tests with no Docker or external services",
+    "contract: benchmark/registry/schema/artifact contracts without emulators",
+    "integration: env deploy, failure inject, traffic, MCP smoke (Docker/clab)",
+    "sandbox: sandbox isolation and security probes",
+    "e2e: full user flows (mock agent benchmark/pipeline)",
+    "live: real LLM, GitHub, or Batfish live tests (credentials required)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:fs",
     "ignore::DeprecationWarning:fs.opener",
     "ignore::DeprecationWarning:pkg_resources",
 ]
+
+[tool.uv]
+prerelease = "allow"

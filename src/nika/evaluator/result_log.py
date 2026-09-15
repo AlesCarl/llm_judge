@@ -10,26 +10,30 @@ from dotenv import load_dotenv
 from nika.config import RESULTS_DIR
 from nika.evaluator.llm_judge import JudgeResponse
 from nika.evaluator.trace_parser import AgentTraceParser
-from nika.orchestrator.problems.prob_pool import get_problem_instance
+from nika.problems.registry import get_problem_class
+from nika.utils.session_artifacts import RUN_FILENAME, is_finished_session
 
 load_dotenv()
 
 EVAL_METRICS_FILENAME = "eval_metrics.json"
-RUN_FILENAME = "run.json"
 GROUND_TRUTH_FILENAME = "ground_truth.json"
 SUBMISSION_FILENAME = "submission.json"
 LLM_JUDGE_FILENAME = "llm_judge.json"
 MESSAGES_FILENAME = "messages.jsonl"
 
-SUMMARY_REQUIRED_ARTIFACTS = (RUN_FILENAME, GROUND_TRUTH_FILENAME, EVAL_METRICS_FILENAME)
+SUMMARY_REQUIRED_ARTIFACTS = (
+    RUN_FILENAME,
+    GROUND_TRUTH_FILENAME,
+    EVAL_METRICS_FILENAME,
+)
 
 
 @dataclass
 class EvalResult:
     agent_type: str = None
     model: str = None
-    root_cause_category: str = None
-    root_cause_name: str = None
+    failure_domain: str = None
+    problem: str = None
     net_env: str = None
     scenario_topo_size: str = None
     session_id: str = None
@@ -67,50 +71,41 @@ def _session_duration_seconds(start_time, end_time) -> float | None:
         return round((end_dt - start_dt).total_seconds(), 2)
 
 
-def default_summary_csv_path() -> str:
-    return os.path.join(RESULTS_DIR, "0_summary", "evaluation_summary.csv")
+def default_summary_csv_path(result_dir=None) -> str:
+    if result_dir is None:
+        result_dir = RESULTS_DIR
+    return os.path.join(result_dir, "0_summary", "evaluation_summary.csv")
 
 
 def missing_summary_artifacts(session_dir: Path) -> list[str]:
-    return [name for name in SUMMARY_REQUIRED_ARTIFACTS if not (session_dir / name).exists()]
+    return [
+        name for name in SUMMARY_REQUIRED_ARTIFACTS if not (session_dir / name).exists()
+    ]
 
 
-def is_finished_session(run_meta: dict) -> bool:
-    if run_meta.get("status") == "finished":
-        return True
-    return run_meta.get("end_time") is not None
-
-
-def iter_session_dirs(results_dir: str | Path | None = None) -> list[Path]:
-    root = Path(results_dir or RESULTS_DIR)
-    if not root.exists():
-        return []
-    session_dirs: list[Path] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir() or entry.name == "0_summary":
-            continue
-        if (entry / RUN_FILENAME).exists():
-            session_dirs.append(entry)
-    return session_dirs
-
-
-def resolve_root_cause_category(run_meta: dict) -> str | None:
-    category = run_meta.get("root_cause_category")
-    if category:
-        return str(category)
+def resolve_failure_metadata(run_meta: dict) -> dict[str, str | None]:
+    resolved = {"failure_domain": run_meta.get("failure_domain")}
     problem_names = run_meta.get("problem_names") or []
-    if not problem_names:
-        return None
-    try:
-        problem = get_problem_instance(
-            problem_names=problem_names,
-            task_level="detection",
-            scenario_name=run_meta.get("scenario_name", ""),
-            **(run_meta.get("scenario_params") or {}),
-        )
-        return str(problem.root_cause_category)
-    except Exception:
-        return None
+    if len(problem_names) > 1:
+        resolved["failure_domain"] = resolved.get("failure_domain") or "multiple_faults"
+    elif len(problem_names) == 1:
+        problem = get_problem_class(problem_names[0])
+        if problem is not None:
+            for key, value in problem.taxonomy_metadata().items():
+                resolved[key] = resolved[key] or value
+    return {key: str(value) if value else None for key, value in resolved.items()}
+
+
+def _primary_problem(run_meta: dict) -> str | None:
+    names = run_meta.get("problem_names")
+    if isinstance(names, list) and names:
+        if len(names) > 1:
+            return "+".join(str(name) for name in names)
+        return str(names[0])
+    if isinstance(names, str) and names.strip():
+        return names.strip()
+    problem = run_meta.get("problem")
+    return str(problem) if problem else None
 
 
 def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
@@ -122,14 +117,21 @@ def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
 
     run_meta = json.loads((session_dir / RUN_FILENAME).read_text(encoding="utf-8"))
     if not is_finished_session(run_meta):
-        raise ValueError(f"Session {run_meta.get('session_id', session_dir.name)} is not finished.")
+        raise ValueError(
+            f"Session {run_meta.get('session_id', session_dir.name)} is not finished."
+        )
 
-    metrics_blob = json.loads((session_dir / EVAL_METRICS_FILENAME).read_text(encoding="utf-8"))
+    metrics_blob = json.loads(
+        (session_dir / EVAL_METRICS_FILENAME).read_text(encoding="utf-8")
+    )
+    taxonomy = resolve_failure_metadata(run_meta)
 
     judge_response: JudgeResponse | None = None
     judge_path = session_dir / LLM_JUDGE_FILENAME
     if judge_path.exists():
-        judge_response = JudgeResponse.model_validate_json(judge_path.read_text(encoding="utf-8"))
+        judge_response = JudgeResponse.model_validate_json(
+            judge_path.read_text(encoding="utf-8")
+        )
 
     trace_metrics = {
         "in_tokens": metrics_blob.get("in_tokens"),
@@ -157,8 +159,8 @@ def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
     return EvalResult(
         agent_type=run_meta.get("agent_type"),
         model=run_meta.get("model"),
-        root_cause_category=resolve_root_cause_category(run_meta),
-        root_cause_name=run_meta.get("root_cause_name"),
+        failure_domain=taxonomy["failure_domain"],
+        problem=_primary_problem(run_meta),
         net_env=run_meta.get("scenario_name"),
         scenario_topo_size=run_meta.get("scenario_topo_size"),
         session_id=run_meta.get("session_id") or session_dir.name,
@@ -167,7 +169,9 @@ def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
         steps=trace_metrics.get("steps"),
         tool_calls=trace_metrics.get("tool_calls"),
         tool_errors=trace_metrics.get("tool_errors"),
-        time_taken=_session_duration_seconds(run_meta.get("start_time"), run_meta.get("end_time")),
+        time_taken=_session_duration_seconds(
+            run_meta.get("start_time"), run_meta.get("end_time")
+        ),
         llm_judge_relevance_score=relevance_score,
         llm_judge_correctness_score=correctness_score,
         llm_judge_efficiency_score=efficiency_score,
@@ -186,7 +190,9 @@ def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
     )
 
 
-def write_eval_summary_csv(eval_results: list[EvalResult], output_path: str | Path) -> Path:
+def write_eval_summary_csv(
+    eval_results: list[EvalResult], output_path: str | Path
+) -> Path:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(asdict(EvalResult()).keys())

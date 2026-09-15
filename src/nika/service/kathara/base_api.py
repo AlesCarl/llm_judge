@@ -3,7 +3,6 @@ import json
 import random
 import re
 import time
-from collections import defaultdict
 from typing import Dict, Literal, Optional, Protocol, runtime_checkable
 
 from func_timeout import func_timeout
@@ -13,6 +12,9 @@ from Kathara.manager.docker.stats.DockerLinkStats import DockerLinkStats
 from Kathara.manager.Kathara import Kathara, Lab
 from Kathara.model.Machine import Machine
 
+from nika.runtime.spec import MachineInventory, NodeRole
+from nika.service.lab.tc_api import TCMixin
+
 
 @runtime_checkable
 class _SupportsBase(Protocol):
@@ -21,51 +23,163 @@ class _SupportsBase(Protocol):
 
     def _run_cmd(self, host_name: str, command: str) -> str: ...
 
+    def _require_machine_inventory(self) -> MachineInventory: ...
 
-class KatharaBaseAPI:
+
+def _static_lab_from_session(session_meta: dict | None, lab_name: str) -> "Lab | None":
+    """Rebuild immutable machine metadata when Kathara's live parser is transiently unavailable."""
+    if not session_meta or not session_meta.get("scenario_name"):
+        return None
+    from nika.net_env.net_env_pool import get_net_env_instance
+
+    params = dict(session_meta.get("scenario_params") or {})
+    params.pop("backend", None)
+    params.pop("lab_name", None)
+    params.pop("topology_file", None)
+    params.pop("runtime_workdir", None)
+    net_env = get_net_env_instance(
+        str(session_meta["scenario_name"]),
+        backend="kathara",
+        lab_name=lab_name,
+        **params,
+    )
+    net_env.load_machines()
+    return net_env.lab
+
+
+class KatharaBaseAPI(TCMixin):
     """
     Base interfaces to interact with the Kathara.
     """
 
-    def __init__(self, lab_name: str):
+    def __init__(self, lab_name: str, *, session_meta: dict | None = None):
         self.instance = Kathara.get_instance()
-        self.lab = self.instance.get_lab_from_api(lab_name=lab_name)
+        try:
+            self.lab = self.instance.get_lab_from_api(lab_name=lab_name)
+        except KeyError:
+            # A controller-owned VDE fault proxy temporarily replaces a Docker
+            # network.  Kathara's live-lab parser follows that network ID and
+            # can raise KeyError before returning the otherwise healthy lab.
+            # Commands only require the lab name; use the persisted scenario
+            # definition for machine metadata until the proxy is removed.
+            self.lab = _static_lab_from_session(session_meta, lab_name)
         if self.lab is None:
             raise ValueError(f"Lab {lab_name} not found.")
+        self._resolved_shell_cache: dict[str, str] = {}
+        if session_meta is None:
+            from nika.utils.session_store import SessionStore
+
+            store = SessionStore()
+            matches = [
+                row
+                for row in store.list_running_sessions()
+                if row.get("lab_name") == lab_name
+            ]
+            if len(matches) == 1:
+                session_meta = store.get_session(str(matches[0]["session_id"]))
+        raw_identities = ((session_meta or {}).get("metadata") or {}).get(
+            "machine_identities"
+        )
+        self.machine_inventory = (
+            MachineInventory.from_dict(raw_identities)
+            if isinstance(raw_identities, dict)
+            else None
+        )
+
+    def _require_machine_inventory(self) -> MachineInventory:
+        if self.machine_inventory is None:
+            raise ValueError(
+                "Kathara machine identities are unavailable; construct the API "
+                "with session metadata."
+            )
+        self.machine_inventory.validate(set(self.lab.machines))
+        return self.machine_inventory
+
+    def _get_lab_link_stats(self) -> Dict[str, DockerLinkStats]:
+        """Get the link stats of the lab."""
+        return next(self.instance.get_links_stats(lab_name=self.lab.name))
+
+    @staticmethod
+    def _escape_for_shell_c(command: str) -> str:
+        return command.replace("'", "'\\''").replace('"', '\\"')
+
+    def _wrap_shell_command(self, shell: str, command: str) -> str:
+        escaped = self._escape_for_shell_c(command)
+        return f"{shell} -c '{escaped}'"
+
+    def _resolve_shell(self, host_name: str) -> str:
+        """Pick bash or sh for ``host_name`` (cached per API instance)."""
+        cached = self._resolved_shell_cache.get(host_name)
+        if cached is not None:
+            return cached
+
+        machine = self.lab.machines.get(host_name)
+        if machine is not None and "shell" in machine.meta:
+            shell = machine.get_shell()
+            self._resolved_shell_cache[host_name] = shell
+            return shell
+
+        probe_cmd = (
+            "/bin/sh -c 'if [ -x /bin/bash ]; then echo /bin/bash; "
+            "elif [ -x /bin/sh ]; then echo /bin/sh; else echo /bin/sh; fi'"
+        )
+        probed = self._run_cmd(host_name, probe_cmd).strip()
+        shell = probed if probed in ("/bin/bash", "/bin/sh") else "/bin/sh"
+        self._resolved_shell_cache[host_name] = shell
+        return shell
+
+    # Sentinel returned to AGENT-FACING callers on exec timeout (the agent can
+    # reason about it). Internal orchestration code must never treat it as
+    # data — use exec_cmd_checked instead.
+    TIMEOUT_SENTINEL = "[TIMEOUT]"
 
     def exec_cmd(self, host_name: str, command: str, timeout: float = 10) -> str:
         """
         Run a command on a machine and return its output as a string.
         """
         cmd_timeout = timeout
-        cmd = "/bin/bash -c '{}'".format(command.replace("'", "'\\''").replace('"', '\\"'))
+        shell = self._resolve_shell(host_name)
+        cmd = self._wrap_shell_command(shell, command)
         try:
             return func_timeout(cmd_timeout, self._run_cmd, args=(host_name, cmd))
         except FunctionTimedOut:
-            return f"[TIMEOUT] Command '{command}' on '{host_name}' exceeded {cmd_timeout}s."
+            return f"{self.TIMEOUT_SENTINEL} Command '{command}' on '{host_name}' exceeded {cmd_timeout}s."
+
+    def exec_cmd_checked(
+        self,
+        host_name: str,
+        command: str,
+        timeout: float = 10,
+        retries: int = 2,
+        retry_delay: float = 5.0,
+    ) -> str:
+        """exec_cmd for ORCHESTRATION callers: retries transient timeouts and
+        raises instead of returning the ``[TIMEOUT]`` sentinel as data.
+
+        Right after a (re)deploy a container can be slow for a few seconds;
+        without this, the sentinel string leaks into JSON parsers and
+        verification comparisons and produces misleading downstream errors.
+        """
+        last_output = ""
+        for attempt in range(retries + 1):
+            output = self.exec_cmd(host_name, command, timeout=timeout)
+            if not output.startswith(self.TIMEOUT_SENTINEL):
+                return output
+            last_output = output
+            if attempt < retries:
+                time.sleep(retry_delay)
+        raise RuntimeError(
+            f"Command on '{host_name}' kept timing out after {retries + 1} "
+            f"attempts ({timeout}s each): {last_output}"
+        )
 
     def get_hosts(self) -> list[Machine]:
-        """
-        Get the list of hosts (all containers with Docker image kathara/base) in the lab.
-        """
-        hosts = []
-        for name, machine in self.lab.machines.items():
-            host_keys = ["pc", "client"]
-            image = machine.get_image()
-            if "base" in image and any(key in name for key in host_keys):
-                hosts.append(name)
-        return hosts
+        """Get explicitly declared host machines."""
+        return self._require_machine_inventory().names_for_role(NodeRole.HOST)
 
     def get_base_hosts(self) -> list[Machine]:
-        """
-        Get the list of base hosts (all containers with Docker image kathara/base) in the lab.
-        """
-        hosts = []
-        for name, machine in self.lab.machines.items():
-            image = machine.get_image()
-            if "base" in image:
-                hosts.append(name)
-        return hosts
+        """Get machines explicitly declaring the generic Linux capability."""
+        return self._require_machine_inventory().names_for_capability("linux")
 
     def get_host_net_config(self, host_name: str) -> dict:
         """
@@ -79,21 +193,14 @@ class KatharaBaseAPI:
         return config
 
     def get_bmv2_switches(self) -> list[Machine]:
-        """
-        Get the list of bmv2 switches in the lab.
-        """
-        switches = []
-        for name, machine in self.lab.machines.items():
-            image = machine.get_image()
-            if "p4" in image:
-                switches.append(name)
-        return switches
+        """Get machines explicitly declaring the BMv2 capability."""
+        return self._require_machine_inventory().names_for_capability("bmv2")
 
     def get_connected_devices(self, host_name: str) -> list[str]:
         """
         Get the list of devices connected to a host.
         """
-        links: Dict[str:DockerLinkStats] = next(self.instance.get_links_stats())
+        links: Dict[str:DockerLinkStats] = self._get_lab_link_stats()
         results = []
         for _, link in links.items():
             if link.name:
@@ -115,19 +222,10 @@ class KatharaBaseAPI:
         else:
             output = result
 
-        # Empty output means the host is down/unreachable (e.g. host_crash) or its
-        # `ip` does not support `-j`. Treat it as "no gateway" instead of raising,
-        # so the agent gets a usable signal rather than wasting steps on retries.
-        if not (output or "").strip():
-            return None
-
         try:
             routes = json.loads(output)
-        except json.JSONDecodeError:
-            # Non-JSON output (empty, or a runtime error string like a paused/down
-            # container) means we can't read the gateway: signal "none" instead of
-            # raising, so the agent doesn't waste steps retrying a failing tool.
-            return None
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse `ip -j route` output: {e}") from e
 
         for r in routes:
             if r.get("dst") == "default":
@@ -150,7 +248,9 @@ class KatharaBaseAPI:
             return result.strip()
         return None
 
-    def get_host_ip(self, host_name: str, iface: str = "eth0", with_prefix: bool = False) -> str | None:
+    def get_host_ip(
+        self, host_name: str, iface: str = "eth0", with_prefix: bool = False
+    ) -> str | None:
         """
         Get the IPv4 address of a host via `ip -j addr`.
         Prefer the given interface (default: eth0).
@@ -162,26 +262,22 @@ class KatharaBaseAPI:
         """
 
         cmd = "ip -j addr"
-        result = self.exec_cmd(host_name, cmd)
+        # checked: a slow container right after deploy must retry, not hand a
+        # "[TIMEOUT] ..." string to json.loads below.
+        result = self.exec_cmd_checked(host_name, cmd)
 
         if isinstance(result, list):
             output = "\n".join(result)
         else:
             output = result
 
-        # Empty output means the host is down/unreachable (e.g. host_crash) or its
-        # `ip` does not support `-j`. Treat it as "no address" instead of raising,
-        # so the agent gets a usable signal rather than wasting steps on retries.
-        if not (output or "").strip():
-            return None
-
         try:
             ifaces = json.loads(output)
-        except json.JSONDecodeError:
-            # Non-JSON output (empty, or a runtime error string like a paused/down
-            # container) means the host has no readable address: signal "none"
-            # instead of raising, so the agent doesn't waste steps retrying.
-            return None
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Failed to parse `ip -j addr` output from '{host_name}': {e}; "
+                f"raw output started with: {output[:200]!r}"
+            ) from e
 
         def format_ip(ip: str, prefix: Optional[int]) -> str:
             if with_prefix and prefix is not None:
@@ -211,24 +307,17 @@ class KatharaBaseAPI:
 
         return None
 
-    def get_host_interfaces(self, host_name: str, include_loopback: bool = False) -> list[str]:
+    def get_host_interfaces(
+        self, host_name: str, include_loopback: bool = False
+    ) -> list[str]:
         cmd = "ip -j addr"
         result = self.exec_cmd(host_name, cmd)
         output = "\n".join(result) if isinstance(result, list) else result
 
-        # Empty output means the host is down/unreachable (e.g. host_crash) or its
-        # `ip` does not support `-j`. Treat it as "no interfaces" instead of raising,
-        # so the agent gets a usable signal rather than wasting steps on retries.
-        if not (output or "").strip():
-            return []
-
         try:
             ifaces = json.loads(output)
-        except json.JSONDecodeError:
-            # Non-JSON output (empty, or a runtime error string like a paused/down
-            # container) means we can't list interfaces: signal "none" instead of
-            # raising, so the agent doesn't waste steps retrying.
-            return []
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse `ip -j addr` output: {e}") from e
 
         names = []
         for link in ifaces:
@@ -247,11 +336,14 @@ class KatharaBaseAPI:
         """
         Get the links of the network.
         """
-        links: Dict[str:DockerLinkStats] = next(self.instance.get_links_stats())
+        links: Dict[str:DockerLinkStats] = self._get_lab_link_stats()
         result = {}
         for _, link in links.items():
             if link.name:
-                result[link.name] = (link.containers[0].labels["name"], link.containers[1].labels["name"])
+                result[link.name] = (
+                    link.containers[0].labels["name"],
+                    link.containers[1].labels["name"],
+                )
         return result
 
     async def exec_cmd_async(self, host_name: str, command: str) -> str:
@@ -268,10 +360,19 @@ class KatharaBaseAPI:
         """
         try:
             output_generator = self.instance.exec(
-                machine_name=host_name, command=command, lab_name=self.lab.name, stream=False
+                machine_name=host_name,
+                command=command,
+                lab_name=self.lab.name,
+                stream=False,
             )
             for item in output_generator:
-                if not item or item == b"" or isinstance(item, int) or item is None or item == "None":
+                if (
+                    not item
+                    or item == b""
+                    or isinstance(item, int)
+                    or item is None
+                    or item == "None"
+                ):
                     continue
 
                 if isinstance(item, bytes):
@@ -282,7 +383,10 @@ class KatharaBaseAPI:
                     out = str(item).strip()
 
                 if len(out) > max_chars:
-                    return out[:max_chars] + f"...[truncated, {len(out) - max_chars} chars omitted]"
+                    return (
+                        out[:max_chars]
+                        + f"...[truncated, {len(out) - max_chars} chars omitted]"
+                    )
 
                 return out
 
@@ -356,66 +460,18 @@ class KatharaBaseAPI:
         return await self._get_reachability_async()
 
     def load_machines(self):
-        self.bmv2_switches = []
-        self.ovs_switches = []
-        self.sdn_controllers = []
-        self.hosts = []
-        self.routers = []
-        self.switches = []
-        self.servers = defaultdict(list)
-
-        machines: Dict[str, Machine] = self.lab.machines
-        for machine, machine_obj in machines.items():
-            image = machine_obj.get_image()
-            if "p4" in image:
-                self.bmv2_switches.append(machine)
-            elif "frr" in image:
-                self.routers.append(machine)
-            elif "base" in image or "nginx" in image or "wireguard" in image:
-                host_keys = ["pc", "client"]
-                if any(key in machine for key in host_keys):
-                    self.hosts.append(machine)
-                elif "load_balancer" in machine or "lb" in machine:
-                    self.servers["load_balancer"].append(machine)
-                elif "switch" in machine or "sw" in machine:
-                    self.switches.append(machine)
-                elif "dns" in machine:
-                    self.servers["dns"].append(machine)
-                elif "dhcp" in machine:
-                    self.servers["dhcp"].append(machine)
-                elif "web" in machine and "backend" not in machine:
-                    self.servers["web"].append(machine)
-                elif "vpn" in machine:
-                    self.servers["vpn"].append(machine)
-
-            elif "influxdb" in image:
-                self.servers["database"].append(machine)
-
-            elif "sdn" in image:
-                self.ovs_switches.append(machine)
-            elif "pox" in image:
-                self.sdn_controllers.append(machine)
-            else:
-                print(f"Unknown machine type: {machine} with image {image}")
-
-        # sort all lists
-        self.bmv2_switches = sorted(self.bmv2_switches)
-        self.ovs_switches = sorted(self.ovs_switches)
-        self.sdn_controllers = sorted(self.sdn_controllers)
-        self.hosts = sorted(self.hosts)
-        self.routers = sorted(self.routers)
-        self.switches = sorted(self.switches)
-        for server_type in self.servers:
-            self.servers[server_type] = sorted(self.servers[server_type])
+        inventory = self._require_machine_inventory()
+        self.bmv2_switches = inventory.names_for_capability("bmv2")
+        self.ovs_switches = inventory.names_for_capability("ovs")
+        self.sdn_controllers = inventory.names_for_role(NodeRole.CONTROLLER)
+        self.hosts = inventory.names_for_role(NodeRole.HOST)
+        self.routers = inventory.names_for_role(NodeRole.ROUTER)
+        self.switches = inventory.names_for_role(NodeRole.SWITCH)
+        self.servers = inventory.services()
 
     async def _get_reachability_async(self) -> str:
         self.load_machines()
-
-        host_names = list(self.hosts)
-        for key, servers in self.servers.items():
-            for server in servers:
-                if server not in host_names:
-                    host_names.append(server)
+        host_names = self.machine_inventory.reachability_targets()
 
         host_ips = {host_name: self.get_host_ip(host_name) for host_name in host_names}
 
@@ -473,7 +529,9 @@ class KatharaBaseAPI:
 
         return json.dumps(payload, separators=(",", ":"))
 
-    def ping_pair(self, host_a: str, host_b: str, count: int = 4, args: str = "") -> str:
+    def ping_pair(
+        self, host_a: str, host_b: str, count: int = 4, args: str = ""
+    ) -> str:
         """
         Ping from one host to another in the lab.
         """
@@ -509,14 +567,18 @@ class KatharaBaseAPI:
         self.exec_cmd(server_host_name, f"iperf3 -s -D {server_args}")
         # Run iperf client
         result = self.exec_cmd(
-            client_host_name, f"iperf3 -c {self.get_host_ip(server_host_name)} -t {duration} {client_args}"
+            client_host_name,
+            f"iperf3 -c {self.get_host_ip(server_host_name)} -t {duration} {client_args}",
         )
         # Stop iperf server
         self.exec_cmd(server_host_name, "pkill iperf3")
         return result
 
     def systemctl_ops(
-        self, host_name: str, service_name: str, operation: Literal["start", "stop", "restart", "status"]
+        self,
+        host_name: str,
+        service_name: str,
+        operation: Literal["start", "stop", "restart", "status"],
     ) -> str:
         """
         Perform systemctl operations (start, stop, restart, status) on a host.
@@ -581,18 +643,3 @@ class KatharaBaseAPI:
         """
         command = "cat /etc/resolv.conf"
         return self.exec_cmd(host_name, command)
-
-
-async def main():
-    api = KatharaBaseAPI(lab_name="ospf_enterprise_dhcp")
-    # result = api.get_connected_devices("super_spine_router_0")
-
-    # result = await api.get_reachability()
-    result = api.exec_cmd("load_balancer", "curl http://20.200.0.2")
-
-    # result = api.curl_web_test("pc_1_1_1_1", "http://web0.local", times=3)
-    print(result)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

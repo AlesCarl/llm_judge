@@ -2,223 +2,998 @@
 
 from __future__ import annotations
 
-import csv
-import subprocess
-import sys
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
-from nika.config import BENCHMARK_DIR, RESULTS_DIR
-from nika.net_env.net_env_pool import scenario_requires_topo_tier
+from pydantic import ValidationError
+
+from nika.config import BENCHMARK_DIR, resolve_results_root
+from nika.evaluator.result_log import MESSAGES_FILENAME
+from nika.net_env.net_env_pool import scenario_requires_topo_size
+from nika.problems.registry import get_problem_class, get_problem_instance
+from nika.utils.session import Session
+from nika.utils.session_artifacts import RUN_FILENAME
 from nika.workflows.agent.run import start_agent
+from nika.workflows.benchmark.trials import (
+    Trial,
+    count_completed_trials,
+    expand_trials,
+    heal_trial_outcome,
+    is_valid_trial,
+    merge_run_config,
+    scan_trials,
+    trial_dir,
+)
+from nika.workflows.benchmark.healthy import (
+    is_healthy_case,
+    write_healthy_session_artifacts,
+)
+from nika.workflows.benchmark.load_config import load_benchmark_input
+from nika.workflows.benchmark.release import (
+    BenchmarkRelease,
+    DEFAULT_RELEASE_VERSION,
+    SplitName,
+    build_job_metadata,
+    load_release,
+    load_run_config,
+    normalize_split,
+    preflight_release,
+    release_fields_for_session,
+    write_job_metadata,
+)
+from nika.workflows.benchmark.run_progress import (
+    update_progress,
+    update_progress_from_scan,
+    write_progress,
+)
+from nika.workflows.benchmark.resume import (
+    benchmark_row_fingerprint,
+    benchmark_row_from_case,
+)
 from nika.workflows.env.start import start_net_env
-from nika.workflows.eval.session import eval_results
+from nika.workflows.eval.session import eval_results, run_eval_metrics
+from nika.workflows.benchmark.multi_fault import flatten_inject_overrides, row_problems
 from nika.workflows.failure.inject import inject_failure
+from nika.workflows.session.close import close_session, load_session_meta_for_close
 
 _BENCHMARK_DONE_PREFIX = "benchmark_done "
 
 
-def default_benchmark_csv_path() -> str:
-    return str(BENCHMARK_DIR / "benchmark_selected.csv")
+def default_benchmark_yaml_path() -> str:
+    return str(BENCHMARK_DIR / "working" / "pool")
 
 
-def _benchmark_row_cli_args(
-    row: dict,
+def default_release_ref() -> str:
+    return DEFAULT_RELEASE_VERSION
+
+
+def _stamp_release_meta(session_id: str, release_meta: dict | None) -> None:
+    if not release_meta:
+        return
+    session = Session().load_running_session(session_id=session_id)
+    for key, value in release_fields_for_session(release_meta).items():
+        session.update_session(key, value)
+    if release_meta.get("fault_ontology"):
+        session.update_session("fault_ontology", release_meta["fault_ontology"])
+
+
+def _stamp_trial_meta(
+    session_id: str,
     *,
-    agent_type: str,
-    llm_backend: str,
-    model: str,
-    max_steps: int,
-    run_judge: bool,
-    judge_llm_backend: str | None,
-    judge_model: str | None,
-    judge_type: str = "single",
-) -> list[str]:
-    args = [
-        row["scenario"],
-        "--problem",
-        row["problem"],
-        "-a",
-        agent_type,
-        "-b",
-        llm_backend,
-        "-m",
-        model,
-        "-n",
-        str(max_steps),
-    ]
-    topo = row.get("topo_size") or ""
-    if topo:
-        args += ["-t", topo]
-    if run_judge:
-        args += ["--judge", "--judge-backend", judge_llm_backend, "--judge-model", judge_model]
-        args += ["--judge-type", judge_type]
-    return args
-
-
-def _run_benchmark_row_subprocess(
-    row: dict,
-    *,
-    agent_type: str,
-    llm_backend: str,
-    model: str,
-    max_steps: int,
-    run_judge: bool,
-    judge_llm_backend: str | None,
-    judge_model: str | None,
-    judge_type: str = "single",
+    trial_id: str | None,
+    trial_index: int | None,
+    case_key: str | None,
 ) -> None:
-    """Run one CSV row via a subprocess for thread-safe parallel batch execution."""
-    cli_args = _benchmark_row_cli_args(
-        row,
-        agent_type=agent_type,
-        llm_backend=llm_backend,
-        model=model,
-        max_steps=max_steps,
-        run_judge=run_judge,
-        judge_llm_backend=judge_llm_backend,
-        judge_model=judge_model,
-        judge_type=judge_type,
-    )
-    proc = subprocess.run(
-        [sys.executable, "-m", "nika.codex_cli.main", "benchmark", "run", *cli_args],
-        capture_output=True,
-        text=True,
-    )
-    output = proc.stdout
-    if proc.stderr:
-        output += proc.stderr
-    if proc.returncode != 0:
-        scenario = row.get("scenario", "?")
-        problem = row.get("problem", "?")
-        raise RuntimeError(
-            f"[{scenario}/{problem}] `nika benchmark run {' '.join(cli_args)}` "
-            f"exited {proc.returncode}:\n{output}"
+    if not trial_id:
+        return
+    session = Session().load_running_session(session_id=session_id)
+    session.update_session("trial_id", trial_id)
+    if trial_index is not None:
+        session.update_session("trial_index", trial_index)
+    if case_key is not None:
+        session.update_session("case_key", case_key)
+
+
+def validate_inject_params(
+    problem: str,
+    scenario: str,
+    topo_size: str,
+    params: dict[str, Any],
+    *,
+    problems: list[str] | None = None,
+) -> None:
+    """Raise ValueError if inject params do not satisfy the problem schema."""
+    resolved_problems = list(problems or row_problems({"problem": problem}))
+    if is_healthy_case(problem):
+        if params:
+            raise ValueError(
+                f"Healthy case {problem!r} does not accept inject parameters."
+            )
+        return
+    if not params:
+        raise ValueError(
+            f"Missing inject parameters for {problem!r}. "
+            f"Use --config with a YAML case or pass complete --set key=value flags. "
+            f"Run `nika failure describe {problem}` for required fields."
         )
-    if output:
-        print(output, end="" if output.endswith("\n") else "\n")
+
+    kwargs: dict = {}
+    if topo_size:
+        kwargs["topo_size"] = topo_size
+    if len(resolved_problems) > 1:
+        nested = flatten_inject_overrides(
+            {"problem": problem, "problems": resolved_problems, "inject": params}
+        )
+        problem_inst = get_problem_instance(
+            problem_names=resolved_problems,
+            scenario_name=scenario,
+            **kwargs,
+        )
+        if hasattr(problem_inst, "resolve_params"):
+            problem_inst.resolve_params(nested)
+        return
+
+    problem_cls = get_problem_class(resolved_problems[0])
+    if problem_cls is None:
+        raise ValueError(f"Unknown problem {resolved_problems[0]!r}")
+    params_class = getattr(problem_cls, "Params", None)
+    if params_class is None:
+        if params:
+            raise ValueError(
+                f"Problem {resolved_problems[0]!r} does not accept inject parameters."
+            )
+        return
+    try:
+        params_class(**params)
+    except ValidationError as exc:
+        raise ValueError(
+            f"Invalid or incomplete inject parameters for {resolved_problems[0]!r}: {exc}. "
+            f"Run `nika failure describe {resolved_problems[0]}` for required fields."
+        ) from exc
 
 
-def run_single_benchmark(
+def _ensure_messages_file(session_dir: Path) -> None:
+    path = session_dir / MESSAGES_FILENAME
+    if not path.exists():
+        path.write_text("", encoding="utf-8")
+
+
+def _require_submission(session_dir: Path) -> None:
+    """Treat an agent return without a submission as an agent failure."""
+    submission_path = session_dir / "submission.json"
+    if not submission_path.is_file():
+        raise RuntimeError(
+            f"Agent completed without writing required submission: {submission_path}"
+        )
+
+
+def _ensure_placeholder_eval_metrics(session_dir: Path) -> None:
+    metrics_path = session_dir / "eval_metrics.json"
+    if metrics_path.exists():
+        return
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "detection_score": -1.0,
+                "localization_accuracy": -1.0,
+                "localization_precision": -1.0,
+                "localization_recall": -1.0,
+                "localization_f1": -1.0,
+                "rca_accuracy": -1.0,
+                "rca_precision": -1.0,
+                "rca_recall": -1.0,
+                "rca_f1": -1.0,
+                "in_tokens": None,
+                "out_tokens": None,
+                "steps": None,
+                "tool_calls": None,
+                "tool_errors": None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _set_trial_outcome(session_dir: Path, *, outcome: str) -> None:
+    run_path = session_dir / RUN_FILENAME
+    if not run_path.is_file():
+        return
+    try:
+        run_meta = json.loads(run_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(run_meta, dict):
+        return
+    run_meta["outcome"] = outcome
+    run_meta["status"] = "finished"
+    run_path.write_text(json.dumps(run_meta, indent=2, default=str), encoding="utf-8")
+
+
+def _finalize_agent_failed_trial(
+    *,
+    session_id: str,
+    session_dir: Path,
+    result_dir: str | None,
+    error: BaseException,
+) -> None:
+    """Mark a post-inject failure as a counted ``agent_failed`` trial."""
+    try:
+        close_session(session_id=session_id, undeploy=True, session_dir=session_dir)
+    except Exception as cleanup_error:  # noqa: BLE001 - best effort
+        print(f"WARNING: could not clean up session {session_id}: {cleanup_error}")
+
+    _ensure_messages_file(session_dir)
+    # Stamp outcome immediately after close so a later kill during metrics
+    # still leaves a recoverable counted trial for resume.
+    _set_trial_outcome(session_dir, outcome="agent_failed")
+    try:
+        run_eval_metrics(session_id=session_id, result_dir=result_dir)
+    except Exception as eval_error:  # noqa: BLE001 - still record failure
+        print(
+            f"WARNING: could not write eval metrics for agent_failed "
+            f"trial {session_id}: {eval_error}"
+        )
+        _ensure_placeholder_eval_metrics(session_dir)
+
+    try:
+        session = Session().load_closed_session(
+            session_id=session_id, result_dir=result_dir
+        )
+        session.update_run_meta("outcome", "agent_failed")
+        session.update_run_meta("agent_error", str(error))
+        session.update_run_meta("status", "finished")
+    except Exception:  # noqa: BLE001 - fall back to direct file write
+        _set_trial_outcome(session_dir, outcome="agent_failed")
+        run_path = session_dir / RUN_FILENAME
+        try:
+            run_meta = json.loads(run_path.read_text(encoding="utf-8"))
+            run_meta["agent_error"] = str(error)
+            run_path.write_text(
+                json.dumps(run_meta, indent=2, default=str), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
+
+def _finalize_timed_out_trial(
+    trial: Trial,
+    *,
+    result_dir: str | None,
+    error: BaseException,
+) -> None:
+    """After a watchdog kill, keep a counted trial when GT was already written."""
+    results_root = resolve_results_root(result_dir)
+    session_dir = trial_dir(results_root, trial.case_key, trial.trial_index)
+    if not (session_dir / "ground_truth.json").is_file():
+        return
+    print(
+        f"[{trial.trial_id}] finalizing timed-out trial as agent_failed under {session_dir}"
+    )
+    _finalize_agent_failed_trial(
+        session_id=trial.trial_id,
+        session_dir=session_dir,
+        result_dir=result_dir,
+        error=error,
+    )
+
+
+def _close_and_eval_success(
+    *,
+    session_id: str,
+    session_dir: Path,
+    result_dir: str | None,
+) -> None:
+    """Close, stamp ``outcome=success`` ASAP, then write eval metrics."""
+    try:
+        close_session(session_id=session_id, undeploy=True, session_dir=session_dir)
+    except FileNotFoundError:
+        # Already closed by another path; still stamp + evaluate.
+        pass
+    _ensure_messages_file(session_dir)
+    _set_trial_outcome(session_dir, outcome="success")
+    try:
+        run_eval_metrics(session_id=session_id, result_dir=result_dir)
+    except Exception as eval_error:  # noqa: BLE001 - outcome already stamped
+        print(
+            f"WARNING: could not write eval metrics for success "
+            f"trial {session_id}: {eval_error}"
+        )
+        _ensure_placeholder_eval_metrics(session_dir)
+    try:
+        closed = Session().load_closed_session(
+            session_id=session_id, result_dir=result_dir
+        )
+        closed.update_run_meta("outcome", "success")
+    except Exception:  # noqa: BLE001 - disk already stamped
+        _set_trial_outcome(session_dir, outcome="success")
+
+
+def run_single_case(
     problem: str,
     scenario: str,
     topo_size: str,
     agent_type: str,
-    llm_backend: str,
-    model: str,
-    max_steps: int,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
     *,
-    run_judge: bool = False,
-    judge_llm_backend: str | None = None,
-    judge_model: str | None = None,
-    judge_type: str = "single",
-) -> str:
-    """
-    Run a single benchmark case.
+    inject_params: dict[str, Any],
+    problems: list[str] | None = None,
+    result_dir: str | None = None,
+    session_tag: str | None = None,
+    release_meta: dict | None = None,
+    trial_id: str | None = None,
+    trial_index: int | None = None,
+    case_key: str | None = None,
+    expected_root_causes: list | None = None,
+    candidate_option_id: str | None = None,
+    topo: str | None = None,
+    igp: str | None = None,
+    bgp_mode: str | None = None,
+    rpki: bool | None = None,
+    backend: str | None = None,
+    device_profile: str | None = None,
+) -> tuple[str, Path]:
+    """Run one benchmark case (env → inject → agent → close + metrics).
+
+    LLM judge and CSV summary are offline via ``nika eval judge`` /
+    ``nika eval summary``.
 
     Returns:
-        The session id for the completed run.
+        The session id and session directory for the completed run.
     """
-    print(f"Running benchmark for Problem: {problem}, Scenario: {scenario}, Topo Size: {topo_size}")
-
-    tier = topo_size if topo_size else None
-    if scenario_requires_topo_tier(scenario) and not tier:
-        raise ValueError(f"Scenario '{scenario}' requires a non-empty topology tier (-t s|m|l).")
-    if not scenario_requires_topo_tier(scenario):
-        tier = None
-
-    session_id = start_net_env(scenario, tier, redeploy=True)
-    session_dir = Path(RESULTS_DIR) / session_id
-
-    inject_failure(problem_names=[problem], session_id=session_id)
-
-    start_agent(
-        agent_type=agent_type,
-        llm_backend=llm_backend,
-        model=model,
-        max_steps=max_steps,
-        session_id=session_id,
-        stream_output=False,
+    isp_bits = []
+    if topo:
+        isp_bits.append(f"Topo: {topo}")
+    if igp:
+        isp_bits.append(f"IGP: {igp}")
+    if bgp_mode:
+        isp_bits.append(f"BGP: {bgp_mode}")
+    if rpki:
+        isp_bits.append("RPKI: on")
+    if backend:
+        isp_bits.append(f"Backend: {backend}")
+    if device_profile:
+        isp_bits.append(f"Device: {device_profile}")
+    print(
+        f"Running benchmark for Problem: {problem}, Scenario: {scenario}, Topo Size: {topo_size}"
+        + (f", {', '.join(isp_bits)}" if isp_bits else "")
+        + (f", Trial: {trial_id}" if trial_id else "")
     )
 
-    eval_results(
-        session_id=session_id,
-        run_judge=run_judge,
-        judge_llm_backend=judge_llm_backend,
-        judge_model=judge_model,
-        judge_type=judge_type,
+    size = topo_size if topo_size else None
+    if scenario_requires_topo_size(scenario) and not size:
+        raise ValueError(
+            f"Scenario '{scenario}' requires a non-empty topology size (-s s|m|l)."
+        )
+    if not scenario_requires_topo_size(scenario):
+        size = None
+
+    resolved_problems = list(
+        problems or row_problems({"problem": problem, "inject": inject_params})
     )
+    inject_overrides = (
+        flatten_inject_overrides(
+            {
+                "problem": problem,
+                "problems": resolved_problems,
+                "inject": inject_params,
+            }
+        )
+        if len(resolved_problems) > 1
+        else dict(inject_params)
+    )
+
+    validate_inject_params(
+        problem,
+        scenario,
+        topo_size or "",
+        inject_params,
+        problems=resolved_problems,
+    )
+    params = dict(inject_params)
+
+    predetermined_dir: str | None = None
+    if trial_id:
+        results_root = resolve_results_root(result_dir)
+        resolved_case_key = case_key
+        resolved_trial_index = trial_index
+        if resolved_case_key is None or resolved_trial_index is None:
+            if "__t" not in trial_id:
+                raise ValueError(
+                    f"Invalid trial_id {trial_id!r}; expected '{{case_key}}__tNN'."
+                )
+            key_part, index_part = trial_id.rsplit("__t", 1)
+            resolved_case_key = resolved_case_key or key_part
+            resolved_trial_index = resolved_trial_index or int(index_part)
+        predetermined_dir = str(
+            trial_dir(results_root, resolved_case_key, int(resolved_trial_index))
+        )
+        case_key = resolved_case_key
+        trial_index = int(resolved_trial_index)
+
+    session_id = start_net_env(
+        scenario,
+        size,
+        redeploy=True,
+        result_dir=result_dir,
+        session_tag=session_tag,
+        session_id=trial_id,
+        session_dir=predetermined_dir,
+        topo=topo,
+        igp=igp,
+        bgp_mode=bgp_mode,
+        rpki=rpki,
+        backend=backend,
+        device_profile=device_profile,
+    )
+    session_dir = Path(predetermined_dir) if predetermined_dir else None
+    gt_written = False
+
+    try:
+        if session_dir is None:
+            session_dir = Path(load_session_meta_for_close(session_id)["session_dir"])
+        if is_healthy_case(problem):
+            write_healthy_session_artifacts(session_id)
+        else:
+            inject_failure(
+                problem_names=resolved_problems,
+                session_id=session_id,
+                param_overrides=inject_overrides,
+                expected_root_causes=expected_root_causes,
+            )
+        gt_written = (session_dir / "ground_truth.json").is_file()
+
+        row = benchmark_row_from_case(
+            scenario=scenario,
+            problem=problem,
+            topo_size=topo_size,
+            inject_params=params,
+            topo=topo,
+            igp=igp,
+            bgp_mode=bgp_mode,
+            rpki=rpki,
+            backend=backend,
+            device_profile=device_profile,
+        )
+        session = Session().load_running_session(session_id=session_id)
+        session.update_session(
+            "benchmark_fingerprint",
+            benchmark_row_fingerprint(row),
+        )
+        if candidate_option_id:
+            session.update_session("candidate_option_id", candidate_option_id)
+        _stamp_release_meta(session_id, release_meta)
+        _stamp_trial_meta(
+            session_id,
+            trial_id=trial_id,
+            trial_index=trial_index,
+            case_key=case_key,
+        )
+
+        start_agent(
+            agent_type=agent_type,
+            llm_provider=llm_provider,
+            model=model,
+            max_steps=max_steps,
+            session_id=session_id,
+            stream_output=False,
+        )
+        _require_submission(session_dir)
+
+        if trial_id:
+            # Batch trials: close then stamp outcome before metrics so a kill
+            # mid-eval still leaves a counted success for --resume.
+            _close_and_eval_success(
+                session_id=session_id,
+                session_dir=session_dir,
+                result_dir=result_dir,
+            )
+        else:
+            eval_results(session_id=session_id)
+            _ensure_messages_file(session_dir)
+            try:
+                closed = Session().load_closed_session(
+                    session_id=session_id, result_dir=result_dir
+                )
+                closed.update_run_meta("outcome", "success")
+            except Exception:  # noqa: BLE001 - still mark outcome on disk
+                _set_trial_outcome(session_dir, outcome="success")
+    except BaseException as exc:
+        # Batch runs ( --config / --release): post-inject failures become
+        # counted agent_failed outcomes. Bare single-case CLI (no trial_id)
+        # still raises so abort-on-error behavior is preserved.
+        if trial_id and (gt_written or (session_dir / "ground_truth.json").is_file()):
+            _finalize_agent_failed_trial(
+                session_id=session_id,
+                session_dir=session_dir,
+                result_dir=result_dir,
+                error=exc,
+            )
+            print(
+                f"{_BENCHMARK_DONE_PREFIX}session_id={session_id} scenario={scenario} "
+                f"problem={problem} session_dir={session_dir} outcome=agent_failed"
+            )
+            return session_id, session_dir
+
+        try:
+            close_session(session_id=session_id, undeploy=True, session_dir=session_dir)
+            print(f"cleaned up failed session {session_id} (lab undeployed)")
+        except Exception as cleanup_error:  # noqa: BLE001 - best effort
+            print(f"WARNING: could not clean up session {session_id}: {cleanup_error}")
+        try:
+            run_path = session_dir / RUN_FILENAME
+            run_meta = json.loads(run_path.read_text(encoding="utf-8"))
+            if run_meta.get("status") == "finished":
+                run_meta["status"] = "error"
+                run_path.write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+        raise
 
     print(
         f"{_BENCHMARK_DONE_PREFIX}session_id={session_id} scenario={scenario} "
         f"problem={problem} session_dir={session_dir}"
     )
-    return session_id
+    return session_id, session_dir
 
 
-def run_benchmark_from_csv(
+def run_benchmark_from_yaml(
     benchmark_file: str,
     agent_type: str,
-    llm_backend: str,
-    model: str,
-    max_steps: int,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
     *,
-    parallel: int = 1,
-    run_judge: bool = False,
-    judge_llm_backend: str | None = None,
-    judge_model: str | None = None,
-    judge_type: str = "single",
+    batch_size: int = 1,
+    result_dir: str | None = None,
+    resume: bool = True,
+    session_tag: str | None = None,
+    case_timeout: int = 0,
+    continue_on_error: bool = False,
+    retry_passes: int = 0,
+    release_meta: dict | None = None,
 ) -> None:
+    """Run ad-hoc YAML cases via the shared trial runner (``n_trials=1``).
+
+    Results land under ``{result_dir}/trials/{case_key}__t01/``, matching release
+    trials/ layout. Resume / batch / timeout / retry use the same orchestrator.
     """
-    Run benchmark cases defined in a CSV file.
+    run_benchmark_trials(
+        benchmark_file=benchmark_file,
+        agent_type=agent_type,
+        llm_provider=llm_provider,
+        model=model,
+        max_steps=max_steps,
+        n_trials=1,
+        batch_size=batch_size,
+        result_dir=result_dir,
+        resume=resume,
+        session_tag=session_tag,
+        case_timeout=case_timeout,
+        continue_on_error=continue_on_error,
+        retry_passes=retry_passes,
+        release_meta=release_meta,
+    )
 
-    The CSV file must contain the following columns:
-    - problem
-    - scenario
-    - topo_size (same values as ``nika env run -t``: s, m, l, or empty)
-    """
-    if parallel < 1:
-        raise ValueError("parallel must be >= 1")
 
-    with open(benchmark_file, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+def _run_trial(
+    trial: Trial,
+    *,
+    agent_type: str,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
+    result_dir: str | None,
+    session_tag: str | None,
+    release_meta: dict | None,
+) -> None:
+    row = trial.row
+    run_single_case(
+        problem=row["problem"],
+        problems=row_problems(row),
+        scenario=row["scenario"],
+        topo_size=row.get("topo_size") or "",
+        inject_params=row["inject"],
+        expected_root_causes=(
+            None
+            if row.get("root_causes_status") == "unresolved"
+            else row.get("root_causes")
+        ),
+        candidate_option_id=row.get("candidate_option_id"),
+        release_meta=release_meta,
+        agent_type=agent_type,
+        llm_provider=llm_provider,
+        model=model,
+        max_steps=max_steps,
+        result_dir=result_dir,
+        session_tag=session_tag,
+        trial_id=trial.trial_id,
+        trial_index=trial.trial_index,
+        case_key=trial.case_key,
+        topo=row.get("topo"),
+        igp=row.get("igp"),
+        bgp_mode=row.get("bgp_mode"),
+        rpki=row.get("rpki"),
+        backend=row.get("backend"),
+        device_profile=row.get("device_profile"),
+    )
 
+
+def _run_trial_with_timeout(
+    trial: Trial,
+    *,
+    case_timeout: int,
+    agent_type: str,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
+    result_dir: str | None,
+    session_tag: str | None,
+    release_meta: dict | None,
+    isolate: bool = False,
+) -> None:
+    """Run one trial; spawn a process when ``case_timeout`` > 0 or ``isolate``."""
+    kwargs = dict(
+        agent_type=agent_type,
+        llm_provider=llm_provider,
+        model=model,
+        max_steps=max_steps,
+        result_dir=result_dir,
+        session_tag=session_tag,
+        release_meta=release_meta,
+    )
+    if case_timeout <= 0 and not isolate:
+        _run_trial(trial, **kwargs)
+        return
+
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(target=_run_trial, kwargs={"trial": trial, **kwargs})
+    proc.start()
+    join_timeout = case_timeout if case_timeout > 0 else None
+    proc.join(join_timeout)
+    if case_timeout > 0 and proc.is_alive():
+        proc.terminate()
+        proc.join(15)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        timeout_error = RuntimeError(
+            f"[{trial.trial_id}] case exceeded --case-timeout ({case_timeout}s) "
+            "and was killed. Its lab may be leaked — check `nika session ps`."
+        )
+        _finalize_timed_out_trial(trial, result_dir=result_dir, error=timeout_error)
+        raise timeout_error
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(15)
+        raise RuntimeError(f"[{trial.trial_id}] trial worker did not exit")
+    if proc.exitcode not in (0, None):
+        # Worker may have finalized agent_failed already; if not and GT exists,
+        # count the crash as agent_failed so resume does not delete progress.
+        crash_error = RuntimeError(
+            f"[{trial.trial_id}] trial worker exited with code {proc.exitcode}"
+        )
+        results_root = resolve_results_root(result_dir)
+        session_dir = trial_dir(results_root, trial.case_key, trial.trial_index)
+        if (session_dir / "ground_truth.json").is_file() and not (
+            is_valid_trial(session_dir) or heal_trial_outcome(session_dir)
+        ):
+            _finalize_timed_out_trial(trial, result_dir=result_dir, error=crash_error)
+        raise crash_error
+
+
+def _run_trials_batch(
+    trials_batch: list[Trial],
+    *,
+    continue_on_error: bool,
+    case_timeout: int,
+    agent_type: str,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
+    result_dir: str | None,
+    session_tag: str | None,
+    release_meta: dict | None,
+) -> list[str]:
+    """Run a batch of trials; parallel batches use spawn processes for isolation."""
+    failures: list[str] = []
+    # Parallel Kathara/MCP work is not safe on shared in-process clients.
+    isolate = len(trials_batch) > 1
+    shared = dict(
+        case_timeout=case_timeout,
+        agent_type=agent_type,
+        llm_provider=llm_provider,
+        model=model,
+        max_steps=max_steps,
+        result_dir=result_dir,
+        session_tag=session_tag,
+        release_meta=release_meta,
+        isolate=isolate,
+    )
+    if len(trials_batch) == 1:
+        trial = trials_batch[0]
+        try:
+            _run_trial_with_timeout(trial, **shared)
+        except Exception as e:  # noqa: BLE001
+            if not continue_on_error:
+                raise
+            print(f"TRIAL FAILED (continuing): [{trial.trial_id}] {e}")
+            failures.append(f"[{trial.trial_id}] {e}")
+        return failures
+
+    with ThreadPoolExecutor(max_workers=len(trials_batch)) as pool:
+        futures = {
+            pool.submit(_run_trial_with_timeout, trial, **shared): trial
+            for trial in trials_batch
+        }
+        for future in as_completed(futures):
+            trial = futures[future]
+            try:
+                future.result()
+            except Exception as e:  # noqa: BLE001
+                if not continue_on_error:
+                    raise
+                print(f"TRIAL FAILED (continuing): [{trial.trial_id}] {e}")
+                failures.append(f"[{trial.trial_id}] {e}")
+    return failures
+
+
+def run_benchmark_trials(
+    benchmark_file: str,
+    agent_type: str,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
+    *,
+    n_trials: int = 1,
+    batch_size: int = 1,
+    result_dir: str | None = None,
+    resume: bool = True,
+    session_tag: str | None = None,
+    case_timeout: int = 0,
+    continue_on_error: bool = False,
+    retry_passes: int = 0,
+    release_meta: dict | None = None,
+) -> None:
+    """Run cases × ``n_trials`` under ``{result_dir}/trials/`` (shared batch kernel)."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    if n_trials < 1:
+        raise ValueError("n_trials must be >= 1")
+    if retry_passes < 0:
+        raise ValueError("retry_passes must be >= 0")
+    if retry_passes and not continue_on_error:
+        continue_on_error = True
+
+    rows = load_benchmark_input(benchmark_file)
     if not rows:
         print(f"No benchmark rows found in {benchmark_file}")
         return
-
-    if parallel == 1:
-        for row in rows:
-            run_single_benchmark(
-                problem=row["problem"],
-                scenario=row["scenario"],
-                topo_size=row.get("topo_size") or "",
-                agent_type=agent_type,
-                llm_backend=llm_backend,
-                model=model,
-                max_steps=max_steps,
-                run_judge=run_judge,
-                judge_llm_backend=judge_llm_backend,
-                judge_model=judge_model,
-                judge_type=judge_type,
-            )
-        return
-
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = [
-            pool.submit(
-                _run_benchmark_row_subprocess,
-                row,
-                agent_type=agent_type,
-                llm_backend=llm_backend,
-                model=model,
-                max_steps=max_steps,
-                run_judge=run_judge,
-                judge_llm_backend=judge_llm_backend,
-                judge_model=judge_model,
-                judge_type=judge_type,
-            )
+    release_meta = dict(release_meta or {})
+    release_meta["fault_ontology"] = sorted(
+        {
+            str(row["problem"])
             for row in rows
-        ]
-        for future in as_completed(futures):
-            future.result()
+            if row.get("problem") and not is_healthy_case(row.get("problem"))
+        }
+    )
+
+    trials = expand_trials(rows, n_trials)
+    results_root = resolve_results_root(result_dir)
+    run_id = None
+    if release_meta:
+        run_id = release_meta.get("run_id") or release_meta.get("job_id")
+
+    def _refresh_progress(pending: list[int], *, status: str = "running") -> None:
+        if not run_id:
+            return
+        update_progress_from_scan(
+            str(run_id),
+            result_dir=results_root,
+            total_trials=len(trials),
+            pending=pending,
+            status=status,
+            release_meta=release_meta,
+        )
+
+    def _finish_progress(pending: list[int]) -> None:
+        if not run_id:
+            return
+        _refresh_progress(pending, status="finished")
+
+    def _run_pending(pending: list[int]) -> list[str]:
+        failures: list[str] = []
+        for chunk_start in range(0, len(pending), batch_size):
+            chunk_indices = pending[chunk_start : chunk_start + batch_size]
+            batch = [trials[index] for index in chunk_indices]
+            if len(batch) == 1 and case_timeout <= 0:
+                trial = batch[0]
+                print(f"{trial.label} {trial.trial_id} running")
+            else:
+                print(
+                    f"[batch {chunk_start // batch_size + 1}] running "
+                    f"{len(batch)} trial(s)"
+                    + (" in parallel" if len(batch) > 1 else "")
+                )
+            failures += _run_trials_batch(
+                batch,
+                continue_on_error=continue_on_error,
+                case_timeout=case_timeout,
+                agent_type=agent_type,
+                llm_provider=llm_provider,
+                model=model,
+                max_steps=max_steps,
+                result_dir=str(results_root),
+                session_tag=session_tag,
+                release_meta=release_meta,
+            )
+            if run_id:
+                completed = count_completed_trials(
+                    trials=trials, result_dir=results_root
+                )
+                total = len(trials)
+                update_progress(
+                    str(run_id),
+                    result_dir=results_root,
+                    total_trials=total,
+                    completed_trials=completed,
+                    pending_trials=max(0, total - completed),
+                    status="running",
+                    release_meta=release_meta,
+                )
+        return failures
+
+    failures: list[str] = []
+    previous_pending: int | None = None
+    for attempt in range(retry_passes + 1):
+        _root, pending = scan_trials(
+            trials=trials,
+            result_dir=results_root,
+            resume=resume or attempt > 0,
+        )
+        _refresh_progress(pending)
+        if not pending:
+            if attempt > 0:
+                print("\nAll trials completed after retries.")
+            _finish_progress([])
+            return
+        if attempt > 0:
+            if previous_pending is not None and len(pending) >= previous_pending:
+                print(
+                    f"\nRetry made no progress ({len(pending)} trial(s) still "
+                    "incomplete); stopping retries."
+                )
+                break
+            print(
+                f"\n[retry {attempt}/{retry_passes}] retrying {len(pending)} incomplete trial(s)"
+            )
+        previous_pending = len(pending)
+        failures = _run_pending(pending)
+        # agent_failed trials count as complete; only incomplete trials remain.
+        _root, still_pending = scan_trials(
+            trials=trials,
+            result_dir=results_root,
+            resume=True,
+        )
+        _refresh_progress(still_pending)
+        if not still_pending:
+            if attempt > 0:
+                print("\nAll trials completed after retries.")
+            _finish_progress([])
+            return
+        if not failures and still_pending:
+            # agent_failed trials count as complete; remaining pending means
+            # incomplete artifacts after the pass.
+            failures = [f"incomplete trial {trials[i].trial_id}" for i in still_pending]
+
+    _, final_pending = scan_trials(
+        trials=trials,
+        result_dir=results_root,
+        resume=True,
+    )
+    _finish_progress(final_pending)
+
+    if failures:
+        print(
+            f"\n{len(failures)} trial(s) still FAILED "
+            "(re-run the same command with --resume to retry only incomplete trials):"
+        )
+        for message in failures:
+            print(f"  - {message.splitlines()[0]}")
+
+
+def run_benchmark_from_release(
+    release_ref: str,
+    agent_type: str,
+    llm_provider: str | None,
+    model: str | None,
+    max_steps: int | None,
+    *,
+    split: SplitName | str = "test",
+    batch_size: int = 1,
+    result_dir: str | None = None,
+    resume: bool = True,
+    session_tag: str | None = None,
+    case_timeout: int | None = None,
+    continue_on_error: bool = True,
+    retry_passes: int = 0,
+    check_images: bool = True,
+    release: BenchmarkRelease | None = None,
+) -> None:
+    """Run a frozen ``nika-bench`` release split after preflight validation.
+
+    Official release runs default to ``continue_on_error=True`` so a single
+    trial failure does not abort the job; pass False (CLI ``--abort-on-error``)
+    to stop on the first error.
+    """
+    resolved_split = normalize_split(split, default="test")
+    resolved = release or load_release(release_ref, split=resolved_split)
+    if resolved.split != resolved_split:
+        resolved = load_release(release_ref, split=resolved_split)
+    preflight_release(resolved, check_images=check_images)
+
+    # Timeout is operational (run config / CLI), not a release pin.
+    if case_timeout is None:
+        from nika.run_config.schema import BenchmarkSettings
+
+        case_timeout = int(BenchmarkSettings.model_fields["case_timeout_sec"].default)
+    effective_timeout = int(case_timeout)
+    n_trials = resolved.n_trials
+    official = True
+
+    results_root = resolve_results_root(result_dir)
+    proposed = build_job_metadata(
+        resolved,
+        agent_type=agent_type,
+        model=model,
+        llm_provider=llm_provider,
+        max_steps=max_steps,
+        n_trials=n_trials,
+        case_timeout_sec=effective_timeout,
+        official=official,
+    )
+    existing = load_run_config(results_root)
+    job = merge_run_config(existing=existing, proposed=proposed)
+    job_path = write_job_metadata(results_root, job)
+    run_id = str(job.get("run_id") or job.get("job_id"))
+    total_trials = int(resolved.case_count) * int(n_trials)
+    write_progress(
+        run_id,
+        result_dir=results_root,
+        status="running",
+        total_trials=total_trials,
+        completed_trials=0,
+        pending_trials=total_trials,
+        benchmark_id=job.get("benchmark_id"),
+        version=job.get("version"),
+        agent_type=job.get("agent_type"),
+        model=job.get("model"),
+    )
+    print(
+        f"Running {resolved.ref} split={resolved.split} "
+        f"({resolved.case_count} cases × {n_trials} trials, "
+        f"official={official}, continue_on_error={continue_on_error}) → {job_path}"
+    )
+
+    run_benchmark_trials(
+        benchmark_file=str(resolved.cases_path),
+        agent_type=agent_type,
+        llm_provider=llm_provider,
+        model=model,
+        max_steps=max_steps,
+        n_trials=n_trials,
+        batch_size=batch_size,
+        result_dir=str(results_root),
+        resume=resume,
+        session_tag=session_tag,
+        case_timeout=effective_timeout,
+        continue_on_error=continue_on_error,
+        retry_passes=retry_passes,
+        release_meta=job,
+    )

@@ -1,0 +1,35 @@
+id: nika-bench
+version: 0.1.0
+splits:
+  dev:
+    cases_file: dev.yaml
+    case_count: 56
+  test:
+    cases_file: test.yaml
+    case_count: 56
+default_split_for_release: test
+defaults:
+  n_trials: 3
+scoring:
+  id: rule-based
+  leaderboard_primary: rca_f1
+  judge_allowed: false
+tools:
+  allowed_mcp_servers:
+  - kathara_base_mcp_server
+  - pingmesh_mcp_server
+  - kathara_frr_mcp_server
+  - kathara_bmv2_mcp_server
+  - kathara_telemetry_mcp_server
+  - task_mcp_server
+images:
+  required:
+  - kathara/base
+  - kathara/frr
+  - nika/base
+  - nika/frr
+  - nika/nginx
+  - nika/pox
+  - nika/wireguard
+  - kathara/p4
+  - kathara/sdn

@@ -1,18 +1,27 @@
-import time
 from collections import defaultdict
-from typing import Dict, Set
+from pathlib import Path
+from typing import ClassVar, Set
 
-from Kathara.manager.Kathara import Kathara, Machine
+from nika.runtime.base import LabRuntime
+from nika.runtime.factory import runtime_for_net_env
+from nika.runtime.spec import LabSpec, MachineInventory, NodeIdentity, NodeRole
 
-from nika.net_env.utils.docker_files.docker_images import ensure_nika_docker_images
+from nika.net_env.contract import ValidationContract
 
 
 class NetworkEnvBase:
-    LAB_NAME = None
+    LAB_NAME: ClassVar[str | None] = None
+    SUPPORTED_BACKENDS: ClassVar[list[str]] = ["kathara"]
     """
     Base class for network environments."""
 
-    def __init__(self):
+    def __init__(self, *, backend: str = "kathara", **kwargs):
+        self.backend = backend
+        self.runtime: LabRuntime | None = None
+        self.topology_file: Path | None = None
+        self.runtime_workdir: Path | None = None
+        self.metadata: dict = {}
+        self.validation_contract: ValidationContract | None = None
         self.name = None
         self.desc = None
         self.instance = None
@@ -25,59 +34,51 @@ class NetworkEnvBase:
         self.links = None
         self.switches = None
         self.servers = None
+        self.machine_identities: dict[str, NodeIdentity] = {}
+
+    def declare_machine(
+        self,
+        name: str,
+        *,
+        role: NodeRole,
+        capabilities: tuple[str, ...] = (),
+        service_type: str | None = None,
+        reachability_target: bool = False,
+    ) -> None:
+        """Declare the semantic identity of a scenario machine."""
+        if name in self.machine_identities:
+            raise ValueError(f"Machine identity already declared: {name}")
+        identity = NodeIdentity(
+            role=role,
+            capabilities=tuple(sorted(set(capabilities))),
+            service_type=service_type,
+            reachability_target=reachability_target,
+        )
+        self.machine_identities[name] = identity
+        self.metadata["machine_identities"] = MachineInventory(
+            self.machine_identities
+        ).to_dict()
+
+    def get_lab_spec(self) -> LabSpec | None:
+        """Containerlab-native scenarios may override; Kathara scenarios return None."""
+        return None
+
+    def _build_runtime(self) -> LabRuntime:
+        if self.runtime is None:
+            self.runtime = runtime_for_net_env(self)
+        return self.runtime
 
     def load_machines(self):
-        self.bmv2_switches = []
-        self.ovs_switches = []
-        self.sdn_controllers = []
-        self.hosts = []
-        self.routers = []
-        self.switches = []
-        self.servers = defaultdict(list)
-
-        machines: Dict[str, Machine] = self.lab.machines
-        for machine, machine_obj in machines.items():
-            image = machine_obj.get_image()
-            if "p4" in image:
-                self.bmv2_switches.append(machine)
-            elif "frr" in image:
-                self.routers.append(machine)
-            elif "base" in image or "nginx" in image or "wireguard" in image:
-                host_keys = ["pc", "client"]
-                if any(key in machine for key in host_keys):
-                    self.hosts.append(machine)
-                elif "load_balancer" in machine or "lb" in machine:
-                    self.servers["load_balancer"].append(machine)
-                elif "switch" in machine or "sw" in machine:
-                    self.switches.append(machine)
-                elif "dns" in machine:
-                    self.servers["dns"].append(machine)
-                elif "dhcp" in machine:
-                    self.servers["dhcp"].append(machine)
-                elif "web" in machine and "backend" not in machine:
-                    self.servers["web"].append(machine)
-                elif "vpn" in machine:
-                    self.servers["vpn"].append(machine)
-
-            elif "influxdb" in image:
-                self.servers["database"].append(machine)
-
-            elif "sdn" in image:
-                self.ovs_switches.append(machine)
-            elif "pox" in image:
-                self.sdn_controllers.append(machine)
-            else:
-                print(f"Unknown machine type: {machine} with image {image}")
-
-        # sort all lists
-        self.bmv2_switches = sorted(self.bmv2_switches)
-        self.ovs_switches = sorted(self.ovs_switches)
-        self.sdn_controllers = sorted(self.sdn_controllers)
-        self.hosts = sorted(self.hosts)
-        self.routers = sorted(self.routers)
-        self.switches = sorted(self.switches)
-        for server_type in self.servers:
-            self.servers[server_type] = sorted(self.servers[server_type])
+        inventory = MachineInventory(self.machine_identities)
+        inventory.validate(set(self.lab.machines))
+        self.machine_inventory = inventory
+        self.bmv2_switches = inventory.names_for_capability("bmv2")
+        self.ovs_switches = inventory.names_for_capability("ovs")
+        self.sdn_controllers = inventory.names_for_role(NodeRole.CONTROLLER)
+        self.hosts = inventory.names_for_role(NodeRole.HOST)
+        self.routers = inventory.names_for_role(NodeRole.ROUTER)
+        self.switches = inventory.names_for_role(NodeRole.SWITCH)
+        self.servers = inventory.services()
 
     def get_topology(self) -> dict:
         """
@@ -113,12 +114,16 @@ class NetworkEnvBase:
             summary += f"PCs: {', '.join(self.hosts)}\n"
         if self.servers:
             for server_type, server_list in self.servers.items():
-                summary += f"{server_type.capitalize()} Servers: {', '.join(server_list)}\n"
+                summary += (
+                    f"{server_type.capitalize()} Servers: {', '.join(server_list)}\n"
+                )
         if self.routers:
             summary += f"Routers (FRRRouting): {', '.join(self.routers)}\n"
         if self.links:
             summary += f"Links: {', '.join(self.links)}\n"
-        summary += f"Topology: {', '.join(f'({a}, {b})' for a, b in self.get_topology())}"
+        summary += (
+            f"Topology: {', '.join(f'({a}, {b})' for a, b in self.get_topology())}"
+        )
         return summary
 
     def __str__(self):
@@ -127,13 +132,14 @@ class NetworkEnvBase:
         """
         return self.get_info()
 
+    def _ensure_runtime_files(self) -> None:
+        if hasattr(self, "_prepare_runtime_files") and self.topology_file is None:
+            self._prepare_runtime_files()
+
     def lab_exists(self):
         """Check if the lab exists"""
-        tmp_lab = self.instance.get_lab_from_api(lab_name=self.name)
-        tmp_machines = tmp_lab.machines
-        if len(tmp_machines) == 0 or tmp_machines is None:
-            return False
-        return True
+        self._ensure_runtime_files()
+        return self._build_runtime().exists()
 
     def _collect_lab_images(self) -> Set[str]:
         if not self.lab or not self.lab.machines:
@@ -142,26 +148,49 @@ class NetworkEnvBase:
 
     def _ensure_docker_images(self) -> None:
         """Ensure local NIKA Docker images required by this lab are available."""
+        from nika.net_env.utils.kathara.docker_files.docker_images import (
+            ensure_nika_docker_images,
+        )
+
         ensure_nika_docker_images(self._collect_lab_images())
 
     def deploy(self):
         """Deploy the lab"""
-        if self.lab_exists():
+        self._ensure_runtime_files()
+        runtime = self._build_runtime()
+        if runtime.exists():
             print(f"Lab {self.name} exists")
             return
-        self._ensure_docker_images()
-        Kathara.get_instance().deploy_lab(lab=self.lab)
-        # sleep for a while to let the lab stabilize
-        time.sleep(5)
+        if self.backend == "kathara":
+            self._ensure_docker_images()
+        runtime.deploy()
+
+    def verify_lab(self) -> dict | None:
+        """Return post-deploy verification result, or ``None`` when not implemented."""
+        return None
+
+    def get_validation_contract(self) -> ValidationContract | None:
+        """Return the scenario's backend-independent healthy baseline contract."""
+        return self.validation_contract
+
+    def post_deploy(self):
+        """Run once the lab is deployed and verified."""
+        return
+
+    def reconcile_dataplane_after_port_reconnect(
+        self, runtime: LabRuntime, nodes: list[str]
+    ) -> None:
+        """Re-apply controller-managed forwarding after a switch port was moved."""
+        return
+
+    def preload_workload_images(self) -> None:
+        """Import cached in-cluster images into k3s nodes when a cache is present."""
+        from nika.net_env.utils.k8s_workload_cache import preload_workload_images
+
+        preload_workload_images(self)
 
     def undeploy(self):
         """Undeploy the lab"""
-        try:
-            self.instance.undeploy_lab(lab_name=self.name)
-        except Exception as e:
-            print(f"Error undeploying lab {self.name}: {e}")
-
-
-if __name__ == "__main__":
-    net_env = NetworkEnvBase()
-    print(net_env)
+        runtime = self.runtime or self._build_runtime()
+        runtime.destroy()
+        self.runtime = None

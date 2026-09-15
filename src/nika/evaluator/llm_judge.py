@@ -1,5 +1,4 @@
 import json
-import os
 
 from langsmith import tracing_context
 
@@ -9,8 +8,6 @@ from dotenv import load_dotenv
 from agent.llm.model_factory import load_model
 from nika.evaluator.token_meter import dump_cost, meter_config, new_meter
 from agent.utils.template import LLM_JUDGE_PROMPT_TEMPLATE
-from nika.config import RESULTS_DIR
-from nika.orchestrator.problems.prob_pool import get_problem_instance
 
 from nika.evaluator.base_judge import BaseJudge
 from nika.evaluator.schemas import JudgeResponse, Score, Scores
@@ -21,7 +18,7 @@ from nika.evaluator.schemas import JudgeResponse, Score, Scores
 load_dotenv()
 
 
-''' 
+'''
 class Score(BaseModel):
     score: int = Field(..., ge=1, le=5, description="Score from 1 to 5.")
     comment: str = Field(..., description="Comment explaining the rationale for the score.")
@@ -48,10 +45,10 @@ class JudgeResponse(BaseModel):
 
 class LLMJudge(BaseJudge):
 
-    def __init__(self, judge_llm_backend: str = "openai", judge_model: str = "gpt-5-mini"):
+    def __init__(self, judge_llm_provider: str = "openai", judge_model: str = "gpt-5-mini"):
 
-        self.llm = load_model(llm_backend=judge_llm_backend, model=judge_model)
-        
+        self.llm = load_model(llm_provider=judge_llm_provider, model=judge_model)
+
 
         self.llm = self.llm.with_structured_output(JudgeResponse) #
         self.prompt = LLM_JUDGE_PROMPT_TEMPLATE
@@ -98,23 +95,3 @@ class LLMJudge(BaseJudge):
 
 
             return evaluation
-
-
-
-if __name__ == "__main__":
-    judge = LLMJudge()
-    session_id = "20251113090058"
-    root_cause_name = "frr_down_localization"
-    eval_model = "gpt-oss:20b"
-    problem_instance = get_problem_instance(root_cause_name)
-    problem_description = problem_instance.META.description
-    net_env_info = problem_instance.net_env.get_info()
-
-    trace_file = os.path.join(RESULTS_DIR, root_cause_name, f"{session_id}_{eval_model}_conversation.log")
-
-    evaluation_content = judge.evaluate_agent(
-        problem_description,
-        trace_file,
-        save_path=os.path.join(RESULTS_DIR, root_cause_name, f"{session_id}_{eval_model}_llm_judge.log"),
-    )
-    print("Evaluation Result:", evaluation_content)
