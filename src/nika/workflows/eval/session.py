@@ -212,15 +212,15 @@ def _build_judge(judge_type: str, judge_llm_provider: str, judge_model: str):
     if judge_type == "multi":
         from nika.evaluator.multi_agent_judge import MultiAgentJudge
 
-        return MultiAgentJudge(judge_llm_backend=judge_llm_provider, judge_model=judge_model)
+        return MultiAgentJudge(judge_llm_provider=judge_llm_provider, judge_model=judge_model)
     if judge_type == "multi_role":
         from nika.evaluator.multi_role_debate.multi_role_debate_judge import MultiRoleDebateJudge
 
-        return MultiRoleDebateJudge(judge_llm_backend=judge_llm_provider, judge_model=judge_model)
+        return MultiRoleDebateJudge(judge_llm_provider=judge_llm_provider, judge_model=judge_model)
     if judge_type == "agent":
         from nika.evaluator.agent_judge import AgentAsJudge
 
-        return AgentAsJudge(judge_llm_backend=judge_llm_provider, judge_model=judge_model)
+        return AgentAsJudge(judge_llm_provider=judge_llm_provider, judge_model=judge_model)
     if judge_type == "single":
         return LLMJudge(judge_llm_provider=judge_llm_provider, judge_model=judge_model)
     raise ValueError(

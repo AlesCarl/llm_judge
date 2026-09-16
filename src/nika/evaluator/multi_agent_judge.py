@@ -138,7 +138,7 @@ class MultiAgentJudge(BaseJudge):
 
     def __init__(
         self,
-        judge_llm_backend: str = "openai",
+        judge_llm_provider: str = "openai",
         judge_model: str = "gpt-4o-mini",
         num_debaters: int = 2,
         max_rounds: int = 3,
@@ -146,19 +146,19 @@ class MultiAgentJudge(BaseJudge):
 
         """
         Args:
-            judge_llm_backend: Backend name ("openai", "ollama", "deepseek").
-            judge_model: Model identifier for the chosen backend.
+            judge_llm_provider: Provider name ("openai", "deepseek", "anthropic", "custom").
+            judge_model: Model identifier for the chosen provider.
             num_debaters: Kept for API compatibility; only Critic+Advocate are used.
             max_rounds: Maximum debate rounds before forcing synthesis.
         """
-        self.judge_llm_backend = judge_llm_backend
+        self.judge_llm_provider = judge_llm_provider
         self.judge_model = judge_model
         self.num_debaters = num_debaters
         self.max_rounds = max_rounds
 
         # Structured LLM for the final synthesis step
         self._synthesis_llm: BaseChatModel = load_model(
-            llm_backend=judge_llm_backend, model=judge_model
+            llm_provider=judge_llm_provider, model=judge_model
         ).with_structured_output(JudgeResponse)
 
         # Drawn once per instance; run_llm_judge() builds a fresh judge for every
@@ -175,12 +175,12 @@ class MultiAgentJudge(BaseJudge):
         """Create Critic (strict, low temp) and Advocate (lenient, higher temp)."""
         
         critic_llm = load_model(
-            llm_backend=self.judge_llm_backend,
+            llm_provider=self.judge_llm_provider,
             model=self.judge_model,
             temperature=_CRITIC_TEMPERATURE,
         )
         advocate_llm = load_model(
-            llm_backend=self.judge_llm_backend,
+            llm_provider=self.judge_llm_provider,
             model=self.judge_model,
             temperature=_ADVOCATE_TEMPERATURE,
         )

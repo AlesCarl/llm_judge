@@ -60,44 +60,56 @@ def _clean_output(raw: str, max_chars: int = 3000) -> str:
 
 
 def _paired_tool_calls(session_dir: str) -> list[dict]:
-    """Pair each tool_start with its tool_end/tool_error, FIFO.
+    """Pair each tool_start with its tool_end/tool_error.
 
-    The trace is written by a single sequential agent loop, so calls never
-    overlap and a simple FIFO queue correctly matches each start with its own
-    end/error.
+    NIKA 0.2 logs a ``tool_call_id`` on both events, and one agent step may run
+    several tool calls, so pairing is by id. Events without an id fall back to
+    FIFO over the calls still open, which is correct for a sequential loop.
     """
     calls: list[dict] = []
-    pending: list[dict] = []
+    open_calls: list[dict] = []
     for e in _read_events(session_dir):
         event = e.get("event")
         if event == "tool_start":
             tool_info = e.get("tool")
             name = tool_info.get("name") if isinstance(tool_info, dict) else str(tool_info)
+            tool_call_id = e.get("tool_call_id")
             call = {
-                "agent": e.get("agent"),
+                "phase": e.get("phase") or e.get("agent"),
                 "name": name or "unknown_tool",
                 "input": str(e.get("input") or "")[:200],
                 "output": "",
+                "_id": str(tool_call_id) if tool_call_id else None,
             }
             calls.append(call)
-            pending.append(call)
-        elif event in ("tool_end", "tool_error") and pending:
-            call = pending.pop(0)
+            open_calls.append(call)
+        elif event in ("tool_end", "tool_error") and open_calls:
+            tool_call_id = e.get("tool_call_id")
+            call = None
+            if tool_call_id:
+                call = next((c for c in open_calls if c["_id"] == str(tool_call_id)), None)
+            if call is None:
+                call = open_calls[0]
+            open_calls.remove(call)
             raw = str(e.get("output") or e.get("error") or "")
             prefix = "ERROR: " if event == "tool_error" else ""
             call["output"] = prefix + _clean_output(raw)
+    for call in calls:
+        call.pop("_id", None)
     return calls
 
 
 def check_taxonomy(root_cause_names: list[str]) -> dict:
-    """Deterministic (non-LLM) check: is each claimed root cause a known name?
+    """Deterministic (non-LLM) check: is each claimed fault_type a known name?
 
     Compares against the full closed-world registry of fault names
-    (``list_avail_problem_names()`` from the problem pool) — this is not the
+    (``list_avail_problem_names()`` from the problem registry) — this is not the
     ground truth for this scenario, just the general vocabulary of possible
-    root causes, so it carries no scenario-specific leakage.
+    root causes, so it carries no scenario-specific leakage. In NIKA 0.2
+    ``submit()`` already rejects fault_types outside the ontology, so an
+    accepted submission normally yields no unknown names.
     """
-    from nika.orchestrator.problems.prob_pool import list_avail_problem_names
+    from nika.problems.registry import list_avail_problem_names
 
     known = set(list_avail_problem_names())
     return {
@@ -125,7 +137,7 @@ def build_verify_tools(session_dir: str) -> list:
             return f"No recorded tool call matches '{query}'."
         lines = [f"{len(matches)} matching call(s):"]
         for c in matches[:10]:
-            lines.append(f"- [{c['agent']}] {c['name']}({c['input']}) -> {c['output'] or '(no output captured)'}")
+            lines.append(f"- [{c['phase']}] {c['name']}({c['input']}) -> {c['output'] or '(no output captured)'}")
         return "\n".join(lines)
 
     @tool
@@ -142,11 +154,21 @@ def build_verify_tools(session_dir: str) -> list:
 
     @tool
     def get_submission_claims() -> str:
-        """Return the agent's final submitted claims (is_anomaly, faulty_devices, root_cause_name) to audit — read from this session's submission.json, never the ground truth."""
+        """Return the agent's final submitted claims (is_anomaly, root_causes as resource_id + fault_type pairs) to audit — read from this session's submission.json, never the ground truth."""
         path = Path(session_dir) / SUBMISSION_FILENAME
         if not path.exists():
             return "No submission.json found — the agent submitted nothing."
-        return path.read_text(encoding="utf-8")
+        try:
+            submission = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return path.read_text(encoding="utf-8")
+        # Claims only: the agent's own diagnosis_report narrative is withheld so
+        # the audit rests on recorded tool outputs, not on the agent's self-report.
+        claims = {
+            "is_anomaly": submission.get("is_anomaly"),
+            "root_causes": submission.get("root_causes", []),
+        }
+        return json.dumps(claims, indent=2)
 
     @tool
     def list_expected_devices() -> str:

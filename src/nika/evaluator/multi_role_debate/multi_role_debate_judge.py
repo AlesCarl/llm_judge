@@ -63,18 +63,18 @@ class MultiRoleDebateJudge(BaseJudge):
 
     def __init__(
         self,
-        judge_llm_backend: str = "openai",
+        judge_llm_provider: str = "openai",
         judge_model: str = "gpt-4o-mini",
         debate_config: DebateConfig | None = None,
     ) -> None:
-        
+
         """Args:
-            judge_llm_backend: LLM provider ("openai", "ollama", "deepseek").
+            judge_llm_provider: LLM provider ("openai", "deepseek", "anthropic", "custom").
             judge_model: Default model id (overridable per role).
             debate_config: Roles + debate parameters. Defaults to
                 DEFAULT_DEBATE_CONFIG.
         """
-        self.judge_llm_backend = judge_llm_backend
+        self.judge_llm_provider = judge_llm_provider
         self.judge_model = judge_model
         self.config = debate_config or DEFAULT_DEBATE_CONFIG
 
@@ -84,7 +84,7 @@ class MultiRoleDebateJudge(BaseJudge):
     def _build_debater(self, role: RoleConfig) -> RoleDebater:
         """Instantiate one RoleDebater from its RoleConfig."""
         llm: BaseChatModel = load_model(
-            llm_backend=self.judge_llm_backend,
+            llm_provider=self.judge_llm_provider,
             model=role.model or self.judge_model,
             temperature=role.temperature,
         )
@@ -238,7 +238,7 @@ class MultiRoleDebateJudge(BaseJudge):
                 # 3** . Switch to structured output for the final round.
                 if is_final:
                     debater.llm = load_model(
-                        llm_backend=self.judge_llm_backend,
+                        llm_provider=self.judge_llm_provider,
                         model=role.model or self.judge_model,
                         temperature=role.scoring_temperature,
                     )

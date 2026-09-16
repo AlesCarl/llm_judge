@@ -126,16 +126,16 @@ class AgentAsJudge(BaseJudge):
 
     def __init__(
         self,
-        judge_llm_backend: str = "openai",
+        judge_llm_provider: str = "openai",
         judge_model: str = "gpt-5-mini",
         verify_budget: int = _VERIFY_BUDGET,
     ) -> None:
-        self.judge_llm_backend = judge_llm_backend
+        self.judge_llm_provider = judge_llm_provider
         self.judge_model = judge_model
         self.verify_budget = verify_budget
 
         self._scoring_llm = load_model(
-            llm_backend=judge_llm_backend, model=judge_model
+            llm_provider=judge_llm_provider, model=judge_model
         ).with_structured_output(JudgeResponse)
 
     @staticmethod
@@ -150,7 +150,7 @@ class AgentAsJudge(BaseJudge):
 
     def _run_verifier(self, session_dir: str, submission: dict, meter) -> tuple[str, list[dict]]:
         """Phase A: GT-free ReAct audit of the submission against this session's trace."""
-        verifier_llm = load_model(llm_backend=self.judge_llm_backend, model=self.judge_model)
+        verifier_llm = load_model(llm_provider=self.judge_llm_provider, model=self.judge_model)
         verifier_agent = create_react_agent(
             model=verifier_llm,
             tools=build_verify_tools(session_dir),
@@ -158,11 +158,15 @@ class AgentAsJudge(BaseJudge):
         )
 
         if submission:
+            root_causes = submission.get("root_causes") or []
+            cause_lines = "".join(
+                f"  root cause {i:<5}: resource={rc.get('resource_id')} fault_type={rc.get('fault_type')}\n"
+                for i, rc in enumerate(root_causes, start=1)
+            ) or "  root causes     : none\n"
             request = (
                 "Claims to audit (the agent's own final submission — NOT the ground truth):\n"
                 f"  anomaly present : {submission.get('is_anomaly')}\n"
-                f"  root cause      : {submission.get('root_cause_name', [])}\n"
-                f"  accused devices : {submission.get('faulty_devices', [])}\n\n"
+                f"{cause_lines}\n"
                 "Use the tools to audit these claims against this session's own recorded "
                 "trace, then report per-claim verdicts."
             )
@@ -223,7 +227,9 @@ class AgentAsJudge(BaseJudge):
         logger.info("AgentAsJudge — Phase A: tool-grounded verification (GT-free)")
         verification_report, audit_trace = self._run_verifier(session_dir, submission, meter)
 
-        taxonomy = check_taxonomy(submission.get("root_cause_name") or [])
+        taxonomy = check_taxonomy(
+            [rc.get("fault_type") for rc in submission.get("root_causes") or [] if rc.get("fault_type")]
+        )
 
         logger.info("AgentAsJudge — Phase B: scoring (GT-aware)")
         scoring_prompt = SCORING_PROMPT.format(

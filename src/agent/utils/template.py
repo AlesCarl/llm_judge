@@ -74,7 +74,9 @@ available to it at each step; only criterion 5 judges the outcome against the gr
    3 = partially explained;
    1 = opaque, or no reasoning stated.
 
-5. Final Outcome — whether the agent produced a final submission AND it matches the ground truth (root cause and faulty devices).
+5. Final Outcome — whether the agent produced a final submission AND it matches the ground truth.
+   The ground truth lists each root cause as a pair (resource id, fault_type); compare the agent's
+   submitted pairs against those pairs, not device names alone.
    5 = submission exists and fully matches;
    3 = submission exists but partially correct or incomplete;
    1 = no submission, or it is wrong.
