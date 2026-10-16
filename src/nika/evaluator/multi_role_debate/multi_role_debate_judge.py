@@ -1,9 +1,7 @@
-"""Multi-Role Debate orchestrator 
+"""Multi-Role Debate judge (ChatEval-style).
 
-Drives N RoleDebater participants through sequential rounds of free
-discussion followed by a final structured-scoring round. Returns the
-full transcript and the parsed DebaterResponse from each debater.
-
+N role-based debaters discuss in sequential, score-free rounds, then each
+scores independently in a final structured round. The scores are averaged.
 """
 
 from __future__ import annotations
@@ -31,34 +29,15 @@ from nika.evaluator.multi_role_debate.roles_config import (
 )
 
 
-
-
 logger = logging.getLogger(__name__)
 
 
-
-# in round1:  _initial_user_prompt()
-
-# Rounds 2..N use _continuation_prompt(), whose two templates (discussion and
-# final-scoring) live in roles_config alongside the other prompt fragments.
-
-
 class MultiRoleDebateJudge(BaseJudge):
-    """Multi-role debate judge for NIKA.
+    """Panel of role debaters.
 
-    Workflow:
-      1. Build N RoleDebater players from a DebateConfig.
-      2. Each debater is primed with its role_description (system prompt). 
-         Round 1 receives the full task prompt (ground truth + trace); 
-         later rounds receive a short continuation prompt.
-      3. Run num_rounds rounds sequentially. Within a round, debaters
-         speak in config order; each sees the previous statements
-         (current round so far + all prior rounds) as visible context.
-      4. In the final round, structured output is activated so every
-         debater emits a DebaterResponse JSON with per-criterion scores.
-      5. run_debate() returns (transcript, [DebaterResponse|None,...]).
-      6. evaluate_agent() runs run_debate, saves artefacts, and applies
-         the aggregator.
+    Round 1 gets the full task prompt, later rounds a short continuation prompt.
+    Debaters speak in config order and see all earlier statements. Only the
+    final round uses structured output.
     """
 
     def __init__(
@@ -67,22 +46,14 @@ class MultiRoleDebateJudge(BaseJudge):
         judge_model: str = "gpt-4o-mini",
         debate_config: DebateConfig | None = None,
     ) -> None:
-        
-        """Args:
-            judge_llm_backend: LLM provider ("openai", "ollama", "deepseek").
-            judge_model: Default model id (overridable per role).
-            debate_config: Roles + debate parameters. Defaults to
-                DEFAULT_DEBATE_CONFIG.
-        """
+
+        """`judge_model` is the default model; each role may override it."""
         self.judge_llm_backend = judge_llm_backend
         self.judge_model = judge_model
         self.config = debate_config or DEFAULT_DEBATE_CONFIG
 
-
-    ### setup
-
     def _build_debater(self, role: RoleConfig) -> RoleDebater:
-        """Instantiate one RoleDebater from its RoleConfig."""
+        """Build one debater from its RoleConfig."""
         llm: BaseChatModel = load_model(
             llm_backend=self.judge_llm_backend,
             model=role.model or self.judge_model,
@@ -91,20 +62,11 @@ class MultiRoleDebateJudge(BaseJudge):
         debater = RoleDebater(llm=llm, name=role.name)
         debater.set_system_prompt(role.role_description)
         return debater
-    
-
-    ### prompts
 
     def _initial_user_prompt(
         self, role: RoleConfig, ground_truth: str, trace: str, is_final: bool
     ) -> str:
-        """Build the round-1 user message (full template).
-
-        In a normal (>=2 round) debate round 1 is a discussion round, so the
-        score-free discussion instruction is injected and the final-scoring
-        instruction is empty. The is_final branch only matters for the
-        degenerate num_rounds==1 config (round 1 is also the scoring round).
-        """
+        """Round-1 message. `is_final` is True only when num_rounds == 1."""
         final_prompt = (
             (role.final_prompt or self.config.final_prompt) if is_final else ""
         )
@@ -118,7 +80,6 @@ class MultiRoleDebateJudge(BaseJudge):
             final_prompt=final_prompt,
         )
 
-
     def _continuation_prompt(
         self,
         role: RoleConfig,
@@ -126,17 +87,11 @@ class MultiRoleDebateJudge(BaseJudge):
         ground_truth: str,
         trace: str,
     ) -> str:
-        """Build the per-turn message for rounds 2..N.
+        """Message for rounds 2..N.
 
-        Discussion rounds get the short template plus the score-free discussion
-        instruction. The final round gets a different template that re-injects
-        ground truth, trace and rubric before the structured-scoring
-        instruction: by then the evidence is several messages back while the
-        peers' arguments sit right next to the scoring request, so the scores
-        risk summarising the debate instead of the trace.
-
-        The two instructions stay mutually exclusive, so numbers are committed
-        for the first time only in the final round.
+        The final round re-injects ground truth, trace and rubric, so scores
+        come from the evidence and not from the peers' arguments.
+        Scores are asked only in the final round.
         """
         if is_final:
             return Template(self.config.final_continuation_prompt).safe_substitute(
@@ -150,27 +105,12 @@ class MultiRoleDebateJudge(BaseJudge):
             discussion_prompt=self.config.discussion_prompt,
             final_prompt="",
         )
-    
-
-
-
-    ### debate ###  main loop and transcript assembly
 
     def run_debate(
         self, ground_truth: str, trace: str, invoke_config: dict | None = None
     ) -> tuple[str, list[DebaterResponse | None]]:
 
-        """
-        Run the full "multi-role debate" and return its outcome.
-
-        Returns:
-            (transcript, final_responses)
-             
-             - transcript: human-readable text of all rounds.
-             - final_responses: list aligned with self.config.roles.
-                  Each entry is the parsed DebaterResponse from the
-                  final round
-        """
+        """Run all rounds. Returns the transcript and one DebaterResponse (or None) per role."""
 
         roles = self.config.roles
         num_rounds = self.config.num_rounds
@@ -195,8 +135,6 @@ class MultiRoleDebateJudge(BaseJudge):
             )
             round_statements: list[str] = []
 
-
-
             for i, (role, debater) in enumerate(zip(roles, debaters)):
 
                 self._inject_pending_peers(
@@ -210,7 +148,6 @@ class MultiRoleDebateJudge(BaseJudge):
                     peer_template=self.config.peer_message_template,
                 )
 
-                # 2. Add the task prompt (round 1) or continuation prompt (round 2+)
                 if round_idx == 0:
                     user_msg = self._initial_user_prompt(
                         role, ground_truth, trace, is_final=is_final
@@ -223,19 +160,15 @@ class MultiRoleDebateJudge(BaseJudge):
                         trace=trace,
                     )
 
-                # The final-round prompt re-presents ground truth, trace and
-                # rubric, so the round-1 copy still sitting in the history is
-                # redundant on this call — and the history is resent on every
-                # call, which is where most of the token cost comes from.
-                # Guarded on round_idx > 0: with num_rounds == 1 round 1 is
-                # also the scoring round and its prompt is the only evidence.
+                # The final prompt repeats the evidence, so drop the round-1 copy
+                # (the history is resent on every call). Skipped when round 1
+                # is also the final round.
                 if is_final and round_idx > 0:
                     debater.collapse_initial(self.config.initial_context_reminder)
 
                 debater.add_user_message(user_msg, is_initial=(round_idx == 0))
 
-
-                # 3** . Switch to structured output for the final round.
+                # Final round: lower temperature and structured output.
                 if is_final:
                     debater.llm = load_model(
                         llm_backend=self.judge_llm_backend,
@@ -244,7 +177,7 @@ class MultiRoleDebateJudge(BaseJudge):
                     )
                     debater.use_structured_output(DebaterResponse)
 
-                # 4. Speak — wrapped so a single debater failure doesn't
+                # One failing debater must not abort the whole debate.
                 try:
                     reply = debater.speak()
                 except Exception as e:
@@ -256,17 +189,11 @@ class MultiRoleDebateJudge(BaseJudge):
 
                 round_statements.append(reply)
 
-
             statements.append(round_statements)
-
 
         transcript = self._build_transcript(roles, statements)
         final_responses = self._parse_final_responses(statements[-1])
         return transcript, final_responses
-
-
-
-    ### peer feed
 
     @staticmethod
     def _inject_pending_peers(
@@ -279,15 +206,10 @@ class MultiRoleDebateJudge(BaseJudge):
         inject_current_round: bool = True,
         peer_template: str | None = None,
     ) -> None:
-        """Append every peer statement that's new to `debater`.
+        """Append the peer statements this debater has not seen yet.
 
-        - Round 0: peers with index < self_idx in the current round.
-        - Round r>0: peers with index > self_idx from round r-1 (they
-          spoke AFTER this debater's last turn in round r-1), then
-          peers with index < self_idx from the current round.
-
-        `peer_template` frames each statement as a peer's opinion rather than
-        an instruction; it applies to every injection, in every round.
+        Round 0: earlier peers of the current round.
+        Round r>0: later peers of round r-1, then earlier peers of the current round.
         """
         if round_idx > 0:
             prev_round = statements[round_idx - 1]
@@ -301,9 +223,6 @@ class MultiRoleDebateJudge(BaseJudge):
                 debater.add_peer_message(
                     roles[j].name, round_statements[j], template=peer_template
                 )
-
-
-    ### transcript
 
     @staticmethod
     def _build_transcript(
@@ -321,11 +240,7 @@ class MultiRoleDebateJudge(BaseJudge):
     def _parse_final_responses(
         final_round: list[str],
     ) -> list[DebaterResponse | None]:
-        """Parse each final-round reply (expected DebaterResponse JSON).
-
-        Tolerant: returns None for entries that don't parse so the
-        aggregator can skip / warn instead of crashing the whole eval.
-        """
+        """Parse each final reply; unparseable ones become None and are skipped by the aggregator."""
         parsed: list[DebaterResponse | None] = []
         for text in final_round:
             try:
@@ -335,20 +250,10 @@ class MultiRoleDebateJudge(BaseJudge):
                 parsed.append(None)
         return parsed
 
-
-    ### API
-
-    # Main wrapper 
-
     def evaluate_agent(
         self, ground_truth: str, trace_path: str, save_path: str
     ) -> JudgeResponse:
-        """
-        Full BaseJudge entry point.
-
-        Runs the debate, persists transcript + per-debater responses,
-        then aggregates into a JudgeResponse.
-        """
+        """Run the debate, save transcript and responses, aggregate into a JudgeResponse."""
         with open(trace_path, "r") as f:
             raw_trace = f.read()
         trace = self._parse_trace(raw_trace)
@@ -358,14 +263,11 @@ class MultiRoleDebateJudge(BaseJudge):
             ground_truth, trace, invoke_config=meter_config(meter)
         )
 
-
-        # Persist artefacts (transcript + per-debater raw responses).
         save = Path(save_path)
         transcript_path = save.with_name("debate_transcript.txt")
         responses_path = save.with_name("debate_responses.json")
         transcript_path.write_text(transcript, encoding="utf-8")
-        
-        
+
         responses_path.write_text(
             json.dumps(
                 {
@@ -375,14 +277,12 @@ class MultiRoleDebateJudge(BaseJudge):
                 indent=2,
             ),
             encoding="utf-8",
-            
+
         )
         logger.info("Saved transcript → %s", transcript_path)
         logger.info("Saved debater responses → %s", responses_path)
 
-
-       # Aggregate per-debater scores into a single JudgeResponse
-       # numeric averaging across the panel
+        # Average the panel's scores.
         role_names = [r.name for r in self.config.roles]
         evaluation = aggregate_responses(final_responses, role_names)
 

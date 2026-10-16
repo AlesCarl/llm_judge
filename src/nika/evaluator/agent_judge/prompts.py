@@ -1,19 +1,9 @@
-"""Prompts for AgentAsJudge's two phases.
+"""Prompts of AgentAsJudge.
 
-Phase A (VERIFIER_SYSTEM) is GT-free: it audits the diagnosis agent's claims
-against that SAME session's own recorded trace only — the Kathara
-environment is already closed by the time the judge runs, so this is
-artifact-grounded verification, not live re-execution (see project note on
-post-hoc evaluation). It does NOT score; it only produces per-claim verdicts
-that Phase B consumes as evidence.
-
-Phase B (SCORING) reuses the shared ``CRITERIA_RUBRIC`` — the SAME measurement
-instrument used by single/multi/multi_role — so cross-judge differences reflect
-the architecture, not the wording. The rubric is the ONLY place that defines
-what each criterion means and what a 1/3/5 looks like; SCORING_SYSTEM only sets
-how strict the judge is and how it must ground its scores (in the Phase-A
-verification report, not the agent's self-report). It never redefines a
-criterion.
+Phase A (VERIFIER_SYSTEM) checks claims against the recorded trace, without
+ground truth, and does not score. Phase B (SCORING_*) scores with the shared
+CRITERIA_RUBRIC, so differences between judges come from the architecture and
+not from the wording.
 """
 
 from agent.utils.template import CRITERIA_RUBRIC
@@ -50,9 +40,7 @@ VERIFIER_SYSTEM = (
 )
 
 
-# Persona + strictness + grounding ONLY. It must never say what a criterion
-# means or what a 1/3/5 looks like — that is defined solely by CRITERIA_RUBRIC,
-# injected verbatim into SCORING_PROMPT below.
+# Persona, strictness and grounding only. What a score means is defined by CRITERIA_RUBRIC.
 SCORING_SYSTEM = (
     "You are a senior network-troubleshooting engineer acting as a judge. "
     "Hold the agent to a high standard and do not give the benefit of the "

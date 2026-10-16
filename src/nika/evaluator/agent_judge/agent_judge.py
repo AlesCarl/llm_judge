@@ -1,29 +1,15 @@
-"""AgentAsJudge for NIKA.
+"""AgentAsJudge: a tool-using judge that audits the agent's own trace.
 
-Fourth judge type, structurally different from the three text-only judges
-(single/multi/multi_role): the judge is itself a tool-using agent that
-audits the diagnosis agent's OWN trace instead of just reading a final
-report and trusting it (the "beauty bias" the text judges are exposed to).
+Phase A (no ground truth): a ReAct agent checks the submitted claims against
+the recorded trace, within a tool-call budget, and reports CONFIRMED / REFUTED /
+COULD-NOT-CHECK per claim.
 
-Two phases:
+Phase B (with ground truth): one structured call scores the five criteria,
+citing the Phase-A verdicts, so scores rest on checked evidence and not on how
+well the agent wrote its report.
 
-  Phase A (GT-free) — a ReAct agent 
-  audits the agent's submitted claims against that SAME session's recorded
-  trace, within a hard tool-call budget, and produces a per-claim
-  CONFIRMED / REFUTED / COULD-NOT-CHECK verification report. It never sees
-  the ground truth.
-
-  Phase B (GT-aware) — a single structured-output call scores the standard
-  five criteria using the ground truth AND the Phase-A report; every comment
-  must cite the report's verdicts, so the final JudgeResponse stays
-  anchored to the active verification instead of collapsing into a plain
-  text judge.
-
-Both phases run on a CLOSED session: Kathara is already torn down by the
-time ``nika eval judge`` runs, so "tool use" here means reading saved
-artifacts (messages.jsonl, submission.json), never live network commands.
-This is a deliberate, documented adaptation of the Agent-as-a-Judge paradigm
-to post-hoc evaluation, not an oversight.
+The session is already closed when the judge runs, so the tools read saved
+artifacts (messages.jsonl, submission.json), not the live network.
 """
 
 import json
@@ -50,15 +36,12 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Tool-call budget for the Phase-A verifier (recursion_limit); keeps the
-# judge's cost bounded and comparable to the other three judges.
+# Phase-A budget (recursion_limit): bounds the cost.
 _VERIFY_BUDGET = 15
 
 
-# Match a "CLAIM: <claim> — <VERDICT> — <evidence>" line. The verdict token
-# anchors the split so an em-dash inside the claim/evidence doesn't break it;
-# leading and surrounding markdown bold (``**``) is tolerated because the judge
-# model sometimes emits the line in bold, and the evidence tail is optional.
+# Matches "CLAIM: <claim> — <VERDICT> — <evidence>". The verdict anchors the split;
+# markdown bold is tolerated and the evidence is optional.
 _CLAIM_RE = re.compile(
     r"CLAIM:\s*\**\s*(?P<claim>.*?)\s*[—-]+\s*\**\s*"
     r"(?P<verdict>COULD-NOT-CHECK|CONFIRMED|REFUTED)\b"
@@ -68,22 +51,15 @@ _CLAIM_RE = re.compile(
 
 
 def _claim_key(claim: str) -> str:
-    """Normalise a claim to dedup restatements (bold header vs final line,
-    ``=`` vs ``:`` separators) so the same claim is counted once."""
+    """Normalise a claim so restatements count once."""
     return re.sub(r"[\s'\"\[\]=:]+", "", claim).lower()
 
 
 def _parse_claim_verdicts(report: str) -> list[dict]:
-    """Extract the verifier's per-claim CLAIM lines into structured records.
+    """Parse the verifier's CLAIM lines into {claim, verdict, evidence} records.
 
-    Phase A ends with one ``CLAIM: <claim> — <VERDICT> — <evidence>`` line per
-    claim. Parsing them into ``{claim, verdict, evidence}`` gives a
-    machine-readable audit field (so downstream analysis can count
-    CONFIRMED/REFUTED/COULD-NOT-CHECK per session without regex-scraping the
-    free-text report). The model may restate a claim (an inline bold summary
-    plus a final line); dedup by normalised claim, last occurrence winning so
-    the authoritative final line prevails. Best-effort: unparseable reports
-    (e.g. budget exhausted) simply yield an empty list.
+    A restated claim keeps its last occurrence. Unparseable reports (e.g. budget
+    exhausted) give an empty list.
     """
     seen: dict[str, dict] = {}
     order: list[str] = []
@@ -105,7 +81,7 @@ def _parse_claim_verdicts(report: str) -> list[dict]:
 
 
 def _serialize_messages(messages) -> list[dict]:
-    """Flatten a LangGraph message list into a JSON-serialisable audit trail."""
+    """Flatten the LangGraph messages into a JSON-serialisable audit trail."""
     out = []
     for m in messages:
         entry = {
@@ -122,7 +98,7 @@ def _serialize_messages(messages) -> list[dict]:
 
 
 class AgentAsJudge(BaseJudge):
-    """Agent-as-a-Judge: tool-grounded verification (Phase A) then scoring (Phase B)."""
+    """Verification (Phase A), then scoring (Phase B)."""
 
     def __init__(
         self,
@@ -149,7 +125,7 @@ class AgentAsJudge(BaseJudge):
             return {}
 
     def _run_verifier(self, session_dir: str, submission: dict, meter) -> tuple[str, list[dict]]:
-        """Phase A: GT-free ReAct audit of the submission against this session's trace."""
+        """Phase A: audit the submission against the session's trace, without ground truth."""
         verifier_llm = load_model(llm_backend=self.judge_llm_backend, model=self.judge_model)
         verifier_agent = create_react_agent(
             model=verifier_llm,
@@ -192,7 +168,7 @@ class AgentAsJudge(BaseJudge):
         except GraphRecursionError:
             report = "(verification ran out of budget before completing)"
             audit_trace = []
-        except Exception as exc:  # verification must never kill the eval
+        except Exception as exc:  # a failed verification must not kill the eval
             logger.warning("AgentAsJudge — verification pass failed: %s", exc)
             report = f"(verification failed: {exc})"
             audit_trace = []
@@ -200,16 +176,7 @@ class AgentAsJudge(BaseJudge):
         return report, audit_trace
 
     def evaluate_agent(self, ground_truth: str, trace_path: str, save_path: str) -> JudgeResponse:
-        """Evaluate the agent through tool-grounded verification then scoring.
-
-        Args:
-            ground_truth: The expected correct answer for the task.
-            trace_path: Path to the agent's action trace log (messages.jsonl).
-            save_path: Path where the resulting JudgeResponse JSON will be saved.
-
-        Returns:
-            JudgeResponse: Structured evaluation, schema identical to the other judges.
-        """
+        """Run both phases and save the JudgeResponse, the audit trace and the cost."""
         session_dir = os.path.dirname(trace_path)
 
         with open(trace_path, "r") as f:

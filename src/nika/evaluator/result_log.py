@@ -149,7 +149,7 @@ def build_eval_result_from_session_dir(session_dir: Path) -> EvalResult:
         efficiency_score = judge_response.scores.efficiency.score
         clarity_score = judge_response.scores.clarity.score
         final_outcome_score = judge_response.scores.final_outcome.score
-        overall_score = judge_response.scores.overall_score.score
+        overall_score = judge_response.scores.overall_score
     else:
         relevance_score = correctness_score = efficiency_score = clarity_score = None
         final_outcome_score = overall_score = None

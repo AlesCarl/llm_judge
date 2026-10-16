@@ -1,24 +1,8 @@
-"""Numeric aggregation: list[DebaterResponse] → JudgeResponse.
+"""Collapse the debaters' DebaterResponses into one JudgeResponse.
 
-Each debater produces an independent judgement (scores + reasoning), 
-then we collapse the panel into a single JudgeResponse via simple per-criterion averaging.
-
-Aggregation rules:
-  - Per-criterion score: unweighted mean across debaters, rounded to the
-    nearest integer (Scores schema requires int 1-5). Every role's vote
-    counts the same: the panel is differentiated by dialectical function,
-    so weighting one function more heavily would be a severity bias rather
-    than an expertise argument (see COMPETENCE_WEIGHTS in roles_config).
-    final_outcome is treated like the other criteria — the aggregate may
-    land on 2 or 4, which encodes panel disagreement (e.g. "mostly failed
-    with one dissenter").
-  - Per-criterion comment: concatenated debater comments, each prefixed
-    with the role name, so the JudgeResponse keeps the diversity of
-    perspectives in plain text.
-  - overall_evaluation: short audit trail listing each debater's
-    overall_score + their reasoning summary.
-  - reasoning_for_overall_score: explicit note that the score is the
-    mean of the panel, including the per-debater overall_score values.
+Per criterion the score is the panel mean, rounded to an integer in [1, 5]
+(weights come from COMPETENCE_WEIGHTS, equal by default). Comments are
+concatenated with the role name, so the different perspectives are kept.
 """
 
 from __future__ import annotations
@@ -38,7 +22,6 @@ from nika.evaluator.multi_role_debate.roles_config import COMPETENCE_WEIGHTS
 logger = logging.getLogger(__name__)
 
 
-# Criteria evaluated by each debater
 _CRITERIA = ("relevance", "correctness", "efficiency", "clarity", "final_outcome")
 
 
@@ -46,19 +29,9 @@ def aggregate_responses(
     responses: list[DebaterResponse | None],
     role_names: list[str],
 ) -> JudgeResponse:
-    """Collapse N DebaterResponse into a single JudgeResponse.
+    """Aggregate the panel. None entries (parse failures) are skipped.
 
-    Args:
-        responses: Parsed final-round outputs aligned with role_names.
-            Entries may be None (parsing failure) and are skipped.
-        role_names: Display names of the debaters, used to label
-            comments and the per-debater audit trail.
-
-    Returns:
-        JudgeResponse with averaged scores and merged textual context.
-
-    Raises:
-        RuntimeError: if no debater produced a valid response.
+    Raises RuntimeError if no debater produced a valid response.
     """
     if len(responses) != len(role_names):
         raise ValueError(
@@ -66,7 +39,7 @@ def aggregate_responses(
             "must have the same length"
         )
 
-    # Keep only the (role_name, DebaterResponse) pairs that parsed.
+    # Keep only the debaters that parsed.
     valid: list[tuple[str, DebaterResponse]] = [
         (name, resp)
         for name, resp in zip(role_names, responses)
@@ -77,7 +50,7 @@ def aggregate_responses(
             "No debater produced a parseable DebaterResponse — "
             "cannot aggregate into JudgeResponse."
         )
-    
+
     if len(valid) < len(responses):
         skipped = [
             name for name, r in zip(role_names, responses) if r is None
@@ -88,11 +61,7 @@ def aggregate_responses(
             skipped,
         )
 
-    # 1. Per-criterion: mean score + concatenated comments. Weights come from
-    #    COMPETENCE_WEIGHTS and are renormalised over the debaters that actually
-    #    produced a parseable response; with the default (empty) mapping every
-    #    role gets 1.0, i.e. a plain unweighted panel mean. All criteria,
-    #    final_outcome included, are rounded to the nearest integer in [1, 5].
+    # Weights are renormalised over the valid debaters; empty mapping = plain mean.
     aggregated_scores: dict[str, Score] = {}
     for criterion in _CRITERIA:
         weights_row = COMPETENCE_WEIGHTS.get(criterion, {})
@@ -108,8 +77,7 @@ def aggregate_responses(
 
         rounded = max(1, min(5, round(avg)))
 
-        # Only label the weights when there actually are some, so the saved
-        # JSON never claims a weighted mean it did not compute.
+        # Show weights only when used.
         criterion_comments = [
             f"[{name}]"
             + (f" (w={weights_row.get(name, 1.0):.2f})" if weights_row else "")
@@ -127,7 +95,6 @@ def aggregate_responses(
 
     scores = Scores(**aggregated_scores)
 
-    # 2. Build the audit-trail texts for the JudgeResponse-level fields.
     per_debater_lines = []
     for name, resp in valid:
         per_debater_lines.append(

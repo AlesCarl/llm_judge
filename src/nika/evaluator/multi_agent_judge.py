@@ -1,25 +1,13 @@
+"""MultiAgentJudge: Critic vs Advocate debate, then a final unconstrained judge.
 
-##
-## - Implementa `MultiAgentJudge` estendendo `BaseJudge`
-## - Contiene tutta la logica del debate (player, round, giudice finale)
+Both debaters score the trace independently (round 1), then exchange rebuttals
+until every criterion is within _CONSENSUS_THRESHOLD or max_rounds is reached.
+Consensus is a numeric check, not an LLM call.
 
-
-"""
-MultiAgentJudge for NIKA.
-
-Two debate players with opposing roles (Critic vs Advocate) deliberate over the
-agent's action trace. Each player produces a structured DebaterResponse (scores +
-reasoning). Consensus is decided purely numerically — the debate continues (up to
-max_rounds) until every criterion is within _CONSENSUS_THRESHOLD, with no moderator
-LLM.
-
-A final evidence-grounded judge then produces the JudgeResponse. Unlike a plain
-CONFIRM/ARBITRATE synthesiser, this judge is never bounded to the debaters'
-[min, max] band: their scores are evidence, not a constraint, and the judge may
-overturn either or both when the trace supports it (SYNTHESIS_FREE_INSTRUCTION).
-The debater order shown to the judge is shuffled once per session and recorded
-to ``debate_order.json``, so a positional preference can be told apart from a
-preference for one of the two personas. Output schema is identical to LLMJudge.
+The final judge sees ground truth, trace, transcript and the debaters' scores,
+and may overturn both. The order in which the debaters are shown is shuffled
+once per session and saved to debate_order.json, to separate positional bias
+from persona bias.
 """
 
 import json
@@ -52,25 +40,20 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Criteria evaluated by debaters (must match Scores field names)
+# Must match the Scores field names.
 _CRITERIA = ["relevance", "correctness", "efficiency", "clarity", "final_outcome"]
 
-# Score gap threshold above which a criterion is considered divergent
+# Largest score gap still counted as agreement.
 _CONSENSUS_THRESHOLD = 1
 
-# temperatures for the two opposing roles
 _CRITIC_TEMPERATURE = 0.2
 _ADVOCATE_TEMPERATURE = 0.2
 
 
-##  Debate player 
-
 class DebatePlayer:
-    """A single debate participant backed by a LangChain chat model.
+    """One debater: a chat model plus its own message history.
 
-    When use_structured_output() is called, speak() invokes the structured LLM
-    and returns the JSON-serialised DebaterResponse (stored in message history
-    so subsequent rounds have context). Otherwise it returns plain text.
+    With structured output enabled, speak() returns the DebaterResponse as JSON.
     """
 
     def __init__(self, llm: BaseChatModel, name: str) -> None:
@@ -78,7 +61,6 @@ class DebatePlayer:
         self.name = name
         self._messages: list = []
         self._structured_llm: BaseChatModel | None = None
-        # Optional invoke config (e.g. token-usage callback); set by the judge.
         self.invoke_config: dict | None = None
 
     def use_structured_output(self, schema) -> None:
@@ -110,25 +92,8 @@ class DebatePlayer:
         return answer
 
 
-## Multi-agent judge 
-
 class MultiAgentJudge(BaseJudge):
-    """
-
-    A Critic (strict) and an Advocate ( lenient)
-    independently evaluate the trace, then exchange rebuttals for up to max_rounds.
-
-    Consensus is purely numerical: the debate stops as soon as every criterion is
-    within _CONSENSUS_THRESHOLD (no moderator LLM). If max_rounds is reached without
-    consensus, the debate stops anyway.
-
-    A final evidence-grounded judge then produces the JudgeResponse. It is never
-    bounded to the debaters' [min, max] band — their scores are evidence, not a
-    constraint — and it may overturn either or both when the trace supports it.
-    The debater order it sees is shuffled once per session and recorded, so a
-    positional preference can be told apart from a preference for one of the two
-    personas. Output uses structured output, schema identical to LLMJudge.
-    """
+    """Critic (strict) vs Advocate (lenient) debate with a final evidence-grounded judge."""
 
     _ROUNDS_FILENAME = "debate_rounds.json"
     _TRANSCRIPT_FILENAME = "debate_transcript.txt"
@@ -143,37 +108,24 @@ class MultiAgentJudge(BaseJudge):
         num_debaters: int = 2,
         max_rounds: int = 3,
     ) -> None:
-
-        """
-        Args:
-            judge_llm_backend: Backend name ("openai", "ollama", "deepseek").
-            judge_model: Model identifier for the chosen backend.
-            num_debaters: Kept for API compatibility; only Critic+Advocate are used.
-            max_rounds: Maximum debate rounds before forcing synthesis.
-        """
+        """num_debaters is kept for API compatibility; only Critic and Advocate are used."""
         self.judge_llm_backend = judge_llm_backend
         self.judge_model = judge_model
         self.num_debaters = num_debaters
         self.max_rounds = max_rounds
 
-        # Structured LLM for the final synthesis step
         self._synthesis_llm: BaseChatModel = load_model(
             llm_backend=judge_llm_backend, model=judge_model
         ).with_structured_output(JudgeResponse)
 
-        # Drawn once per instance; run_llm_judge() builds a fresh judge for every
-        # session, so this is effectively one random order per session.
+        # run_llm_judge() builds a new judge per session: one random order per session.
         self._order: list[int] = random.sample(range(self.num_debaters), self.num_debaters)
-        # Debater names in their canonical order; captured during synthesis so
-        # evaluate_agent() can record what the judge actually saw.
+        # Filled during synthesis, saved by evaluate_agent().
         self._names_seen: list[str] = []
 
 
-    #  helpers
-
     def _create_debaters(self) -> list[DebatePlayer]:
-        """Create Critic (strict, low temp) and Advocate (lenient, higher temp)."""
-        
+        """Create the Critic and the Advocate, both with structured output."""
         critic_llm = load_model(
             llm_backend=self.judge_llm_backend,
             model=self.judge_model,
@@ -196,7 +148,7 @@ class MultiAgentJudge(BaseJudge):
         return [critic, advocate]
 
     def _extract_scores(self, assessment_json: str) -> dict[str, int] | None:
-        """Parse a DebaterResponse JSON string and return {criterion: score}."""
+        """Return {criterion: score} from a DebaterResponse JSON, or None if unparseable."""
         try:
             data = json.loads(assessment_json)
             return {c: data["scores"][c]["score"] for c in _CRITERIA}
@@ -205,12 +157,9 @@ class MultiAgentJudge(BaseJudge):
 
 
     def _parse_round_scores(self, assessments: list[str]) -> list[dict[str, int]]:
-        """Parse every debater's per-criterion scores for a round.
+        """Parse every debater's scores; raise if any is unparseable.
 
-        Fail-fast: if any debater's structured output cannot be parsed, raise.
-        The caller aborts this multi evaluation (no llm_judge.json produced) and
-        the batch moves on to the next case — better a flagged missing data
-        point than a silently degraded one.
+        Aborting the evaluation is intended: a missing data point is better than a degraded one.
         """
         parsed = [self._extract_scores(a) for a in assessments]
         if any(p is None for p in parsed):
@@ -221,12 +170,7 @@ class MultiAgentJudge(BaseJudge):
 
     @staticmethod
     def _is_consensus(parsed: list[dict[str, int]]) -> bool:
-        """Numerical consensus: every criterion within _CONSENSUS_THRESHOLD.
-
-        Pure code check — no LLM. This is the ONLY arbiter of consensus; the
-        debate continues (up to max_rounds) until all criteria are within the
-        threshold or the round budget is exhausted.
-        """
+        """True if every criterion is within _CONSENSUS_THRESHOLD. Pure code, no LLM."""
         for criterion in _CRITERIA:
             scores = [p[criterion] for p in parsed]
             if max(scores) - min(scores) > _CONSENSUS_THRESHOLD:
@@ -236,11 +180,7 @@ class MultiAgentJudge(BaseJudge):
     def _format_debater_votes(
         self, debater_names: list[str], parsed: list[dict[str, int]]
     ) -> str:
-        """Render the debaters' final per-criterion scores in the shuffled order.
-
-        Also records which names were shown, so evaluate_agent() can persist
-        what the judge actually saw.
-        """
+        """Render the final scores in the shuffled order and remember the names shown."""
         self._names_seen = list(debater_names)
         lines = []
         for idx in self._order:
@@ -261,13 +201,9 @@ class MultiAgentJudge(BaseJudge):
         consensus: bool,
         invoke_config: dict | None = None,
     ) -> JudgeResponse:
-        """Produce the final JudgeResponse as an evidence-grounded, unconstrained judge.
+        """Final verdict, not bounded to the debaters' score range.
 
-        ``consensus`` is accepted for signature compatibility but deliberately
-        ignored: whether the debaters agreed must not change the judge's mandate.
-        The judge sees the ground truth, the trace, the shuffled-order transcript
-        AND the debaters' explicit final scores, and decides its own verdict —
-        it is never bounded to the debaters' [min, max] band.
+        ``consensus`` is ignored on purpose: agreement must not change the judge's mandate.
         """
         debater_votes = self._format_debater_votes(debater_names, final_parsed)
         messages = [
@@ -290,16 +226,13 @@ class MultiAgentJudge(BaseJudge):
 
     @staticmethod
     def _strip_reasoning(assessment_json: str) -> str:
-        """Drop the top-level `reasoning` field before exposing an assessment
-        to the other debater in a rebuttal round (keeps only per-criterion
-        scores/comments — the actual arguable content)."""
+        """Drop the top-level `reasoning` before showing an assessment to the other debater."""
         data = json.loads(assessment_json)
         data.pop("reasoning", None)
         return json.dumps(data, indent=2)
 
     def _build_transcript(self, rounds: list[dict]) -> str:
-        """Render the transcript with the debaters in the same shuffled order
-        used for the votes, so the judge sees a single consistent ordering."""
+        """Render the transcript in the same shuffled order used for the votes."""
         lines = []
         for r in rounds:
             lines.append(f"=== Round {r['round']} ===")
@@ -312,23 +245,10 @@ class MultiAgentJudge(BaseJudge):
             lines.append("")
         return "\n".join(lines)
 
-
-
-    ## main 
-
     def evaluate_agent(
         self, ground_truth: str, trace_path: str, save_path: str
     ) -> JudgeResponse:
-        """Evaluate the agent through Critic vs Advocate debate.
-
-        Args:
-            ground_truth: The expected correct answer / ground truth for the task.
-            trace_path: Path to the agent's action trace log file.
-            save_path: Path where the resulting JudgeResponse JSON will be saved.
-
-        Returns:
-            JudgeResponse: Structured evaluation identical in schema to LLMJudge's output.
-        """
+        """Run the debate and save the JudgeResponse plus rounds, transcript, order and cost."""
         with open(trace_path, "r") as f:
             raw_trace = f.read()
         trace = self._parse_trace(raw_trace)
@@ -344,8 +264,7 @@ class MultiAgentJudge(BaseJudge):
         rounds: list[dict] = []
         current_assessments: list[str] = []
 
-
-        # Round 1: Critic and Advocate evaluate independently
+        # Round 1: independent evaluations
         logger.info("MultiAgentJudge — Round 1: independent evaluations (Critic vs Advocate)")
         initial_prompt = INITIAL_EVALUATION_PROMPT.format(
             ground_truth=ground_truth, trace=trace
@@ -362,8 +281,7 @@ class MultiAgentJudge(BaseJudge):
         })
 
 
-        # Rounds 2-N: rebuttals until numerical consensus or max_rounds.
-        # Consensus is decided purely by the score gap (no moderator LLM).
+        # Rounds 2..N: rebuttals until consensus or max_rounds.
         for round_num in range(2, self.max_rounds + 1):
             if consensus:
                 logger.info(
@@ -398,12 +316,9 @@ class MultiAgentJudge(BaseJudge):
             )
 
 
-        # Final judgement — evidence-grounded, unconstrained judge (sees GT + trace + votes).
+        # Final judgement
         logger.info("MultiAgentJudge — Final judgement, debater order %s", self._order)
         transcript = self._build_transcript(rounds)
-
-
-        ## METRICS: save debate rounds for ** analysis
 
         rounds_path = save_path.replace("llm_judge.json", self._ROUNDS_FILENAME)
         with open(rounds_path, "w+") as f:

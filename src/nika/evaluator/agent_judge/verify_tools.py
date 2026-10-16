@@ -1,11 +1,7 @@
-"""Artifact-grounded verification tools for AgentAsJudge's Phase A (GT-free).
+"""Verification tools for AgentAsJudge Phase A.
 
-The Kathara environment is torn down before the judge ever runs (session
-close happens before evaluation — see project note on post-hoc evaluation),
-so these tools operate on the CLOSED session's saved artifacts
-(``messages.jsonl``, ``submission.json``) rather than the live network. This
-is the necessary adaptation of Agent-as-a-Judge's "tool-grounded
-verification" to a post-hoc evaluation setting.
+They read the closed session's saved files (messages.jsonl, submission.json,
+topology.json), since Kathara is already torn down when the judge runs.
 """
 
 import ast
@@ -35,14 +31,9 @@ def _read_events(session_dir: str) -> list[dict]:
 
 
 def _clean_output(raw: str, max_chars: int = 3000) -> str:
-    """Best-effort extraction of the text content from a str(ToolMessage).
+    """Best-effort extraction of the text from a logged str(ToolMessage).
 
-    LangChain tool outputs are logged as ``str(ToolMessage)``, whose
-    ``content`` is normally a list of content blocks (``content=[{'type':
-    'text', 'text': '...'}, ...] name=... tool_call_id=...``), not a bare
-    string — a single quoted-string fallback misses this and would return
-    the raw repr verbatim (including the ``content=[...] name=...`` noise).
-
+    Its content is usually a list of blocks (``content=[{'type': 'text', ...}] name=...``).
     """
     m = re.search(r"^content=(\[.*?\])\s+name=", raw, flags=re.DOTALL)
     if m:
@@ -60,12 +51,7 @@ def _clean_output(raw: str, max_chars: int = 3000) -> str:
 
 
 def _paired_tool_calls(session_dir: str) -> list[dict]:
-    """Pair each tool_start with its tool_end/tool_error, FIFO.
-
-    The trace is written by a single sequential agent loop, so calls never
-    overlap and a simple FIFO queue correctly matches each start with its own
-    end/error.
-    """
+    """Pair each tool_start with its tool_end/tool_error (FIFO: the agent loop is sequential)."""
     calls: list[dict] = []
     pending: list[dict] = []
     for e in _read_events(session_dir):
@@ -90,12 +76,9 @@ def _paired_tool_calls(session_dir: str) -> list[dict]:
 
 
 def check_taxonomy(root_cause_names: list[str]) -> dict:
-    """Deterministic (non-LLM) check: is each claimed root cause a known name?
+    """Non-LLM check: is each claimed root cause a known fault name?
 
-    Compares against the full closed-world registry of fault names
-    (``list_avail_problem_names()`` from the problem pool) — this is not the
-    ground truth for this scenario, just the general vocabulary of possible
-    root causes, so it carries no scenario-specific leakage.
+    It uses the general registry of fault names, not this scenario's ground truth.
     """
     from nika.orchestrator.problems.prob_pool import list_avail_problem_names
 
@@ -108,7 +91,7 @@ def check_taxonomy(root_cause_names: list[str]) -> dict:
 
 
 def build_verify_tools(session_dir: str) -> list:
-    """Build the Phase-A verification toolset bound to one closed session."""
+    """Build the Phase-A tools for one closed session. The @tool docstrings are shown to the LLM."""
 
     @tool
     def search_trace(query: str) -> str:

@@ -1,9 +1,4 @@
-
 from pydantic import BaseModel, Field
-
-
-# QUI METTO JudgeResponse
-
 
 
 class Score(BaseModel):
@@ -17,15 +12,17 @@ class Scores(BaseModel):
     efficiency: Score = Field(..., description="How efficient and well-ordered the agent’s actions were.")
     clarity: Score = Field(..., description="How clear and well-explained the agent’s reasoning was.")
     final_outcome: Score = Field(..., description="Whether the final outcome existed and matched the ground truth.")
-    # overall_score: Score = Field(..., description="Overall final score summarizing the total performance.")
+
     @property
     def overall_score(self) -> float:
+        """Mean of the five criteria, computed in code rather than by the LLM."""
         return (self.relevance.score + self.correctness.score + self.efficiency.score +
                 self.clarity.score + self.final_outcome.score) / 5
 
 
-
 class JudgeResponse(BaseModel):
+    """Final output shared by all judges."""
+
     scores: Scores = Field(..., description="Per-criterion scores and evaluator comments.")
     overall_evaluation: str = Field(..., description="High-level summary of strengths and weaknesses.")
     reasoning_for_overall_score: str = Field(..., description="Explanation of why this overall score was given.")
@@ -33,9 +30,7 @@ class JudgeResponse(BaseModel):
 
 
 class DebaterResponse(BaseModel):
-    """Output produced by each debate participant (critic & advocate)"""
+    """Output of a single debater (Critic, Advocate, or a role in the panel)."""
+
     scores: Scores = Field(..., description="Per-criterion scores with justification.")
     reasoning: str = Field(..., description="Overall reasoning summary supporting the scores.")
-    
-    # JudgeResponse is the final output
-

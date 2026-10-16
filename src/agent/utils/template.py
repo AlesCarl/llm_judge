@@ -1,9 +1,7 @@
 # Shared scoring rubric — IDENTICAL across all three judges (single, multi,
 # multi_role). It defines the measurement instrument (what each criterion means
 # and what a 1/3/5 looks like) so that differences between judge architectures
-# reflect the architecture, not the prompt wording. Keep it free of '{', '}'
-# and '$' so it can be concatenated into both str.format() and string.Template
-# prompts without escaping.
+# reflect the architecture, not the prompt wording.
 
 CRITERIA_RUBRIC = """\
 Assess the agent on these five criteria. Score each from 1 to 5 (1 = poor, 5 = excellent).
@@ -99,7 +97,7 @@ Agent Action Trace:
 {trace}
 
 """ + CRITERIA_RUBRIC + """
-Respond with ONLY a JSON object matching this structure — no markdown, no extra text:
+Respond with ONLY a JSON object matching this structure, no markdown, no extra text:
 """ + _DEBATER_JSON_SCHEMA
 
 
@@ -111,7 +109,7 @@ Your fellow panel member has provided the following assessment:
 
 Review their arguments carefully. Update your position where they raise valid points \
 backed by evidence from the trace, or defend your original assessment if you disagree. \
-Respond with ONLY a JSON object in the same structure as before — no markdown, no extra text.\
+Respond with ONLY a JSON object in the same structure as before, no markdown, no extra text.\
 """
 
 
@@ -171,7 +169,7 @@ SYNTHESIS_PROMPT = """\
 Produce the definitive structured evaluation of the agent's performance, grounded in the
 evidence above and scored strictly according to the rubric.
 
-You MUST respond with a valid JSON object only — no markdown, no extra text, no code blocks.
+You MUST respond with a valid JSON object only, no markdown, no extra text, no code blocks.
 The JSON must follow exactly this structure:
 {{
   "scores": {{
